@@ -23,48 +23,63 @@ contract Vault is Ownable, ReentrancyGuard {
     /// @notice Minimum tokens required for locking
     uint public constant MIN_LOCK_AMOUNT = 1_000 * 10 ** 18;
     /// @notice Max number of users who can lock tokens
-    uint public constant MAX_ACTIVE_USERS = 1_000;
+    uint public maxActiveUsers = 1_000;
     /// @notice Deposit fee percentage
     uint public constant DEPOSIT_FEE_PERCENT = 1;
     /// @dev Maps and state variables
     /// @notice Fee beneficiary
     address public feeBeneficiary;
-    /// @notice Number of active users
-    uint public usersCounter;
     /// @notice Number of reward distributions
     uint public distributionRounds;
     /// @notice Locked tokens
     uint public totalLockedTokens;
-    /// @notice Total users per distribution round
-    uint public totalUsersPerRound;
+    /// @notice Current epoch id
+    uint256 public currentEpochId;
+    /// @notice Epoch duration
+    uint256 public epochDuration;
     /// @notice Active users array
-    address[MAX_ACTIVE_USERS] public activeUsers;
+    address[] public activeUsers;
     /// @notice Array to store reward token addresses
     address[] public rewardTokenAddresses;
+    /// @notice Array to store vault token addresses
+    address[] public vaultTokenAddresses;
 
     /// @notice Stores user token lock details
     struct UserLock {
         uint256 lockedTokens; ///< Amount of tokens locked
+        address[] lockedTokensAddresses;
+        uint256[] lockedTokensAmounts;
+        uint256[] lockedTokensEndBlocks;
+        uint256[] lockedTokensStartBlocks;
         uint256 virtualLockedTokens; ///< Virtual principal amount
         uint256 lockStartBlock; ///< Start time when tokens were locked
         uint256 lockEndBlock; ///< End time when tokens will be unlocked
+        uint256 lastClaimedEpoch; ///< Last epoch claimed
     }
 
     /// @notice Struct to store reward token details
     struct RewardToken {
         address tokenAddress;
         uint availableRewards;
-        uint minRewardThreshold;
+        uint epochsLeft;
     }
-
-    /// @notice Struct to store reward token distributions
-    struct RewardDistribution {
-        address rewardToken;
-        uint availableRewards;
-        uint lastUserIndex;
-        uint blockNumber;
-        uint usersCountAtBlock;
-        uint totalSupplyAtBlock;
+    /// @notice Struct to store epoch rewards details
+    struct EpochRewards {
+        address[] rewardTokens;
+        uint256[] rewardAmounts;
+        uint256[] rewardsClaimed;
+    }
+    /// @notice Struct to store epoch details
+    struct Epoch {
+        uint256 startBlock;
+        uint256 endBlock;
+        uint256 totalSupplyAtStart;
+    }
+    /// @notice Struct to store vault token details
+    struct VaultToken {
+        address tokenAddress;
+        uint conversionRate;
+        uint epochsLeft;
     }
 
     /// @notice Mapping of user addresses to their respective lock information
@@ -73,8 +88,13 @@ contract Vault is Ownable, ReentrancyGuard {
     mapping(address => bool) public authorized;
     /// @notice Mapping to store reward token details
     mapping(address => RewardToken) public rewardTokens;
-    /// @notice Mapping to store reward token distributions
-    mapping(uint => RewardDistribution) public rewardDistributions;
+    /// @notice Mapping to store vault token details
+    mapping(address => VaultToken) public vaultTokens;
+    /// @notice Mapping to store epoch details
+    mapping(uint256 => Epoch) public epochs;
+    /// @notice Mapping to store epoch rewards details
+    mapping(uint256 => EpochRewards) internal epochRewardsInfo;
+
 
     /// @notice Erc20 token to lock in the Vault
     IERC20 public immutable vaultToken;
@@ -95,20 +115,14 @@ contract Vault is Ownable, ReentrancyGuard {
 
     /// @notice Event emitted when user claim their locked tokens
     event TokensUnlocked(address indexed user, uint amount);
-
-    /// @notice Event emitted when admin distribute rewards to user
-    event RewardsDistributed(
-        address indexed user,
-        address indexed token,
-        uint amount
-    );
-
-    /// @notice Event emitted when rewards are deposited to the vault contract
-    event RewardsFunded(address indexed token, uint amount);
-
+    /// @notice Event emitted when user claim their rewards
+    event RewardsFunded(address indexed token, uint amount, uint nEpochs);
+    /// @notice Event emitted when user claim their rewards
+    event RewardsClaimed(address indexed user, uint256 epochId);
     /// @notice Event emitted emergency unlock is triggered
     event EmergencyUnlockTriggered(address indexed user, uint amount);
-
+    /// @notice Event emitted when epoch is finalized
+    event EpochFinalized(uint256 epochId);
     /// @notice Event emitted when admin withdraws ERC20 sent by mistake to the contract
     event ERC20Withdrawn(address indexed token, uint amount);
 
@@ -121,7 +135,12 @@ contract Vault is Ownable, ReentrancyGuard {
 
     ////////////////// CONSTRUCTOR /////////////////////
 
-    constructor(address _owner, address _vaultToken, address _feeBeneficiary) {
+    constructor(
+        address _owner,
+        address _vaultToken,
+        address _feeBeneficiary,
+        uint _epochDuration
+    ) {
         require(_owner != address(0), "Invalid owner address");
         require(_vaultToken != address(0), "Invalid ERC20 address");
         require(
@@ -135,10 +154,12 @@ contract Vault is Ownable, ReentrancyGuard {
         feeBeneficiary = _feeBeneficiary; // Set fee beneficiary
         rewardTokens[_vaultToken] = RewardToken({
             tokenAddress: _vaultToken,
-            availableRewards: 0,
-            minRewardThreshold: 1 * 10 ** 18
-        }); // Add vault token as the first reward token
+            epochsLeft: 0,
+            availableRewards: 0
+        });
+        // Add vault token as the first reward token
         rewardTokenAddresses.push(_vaultToken);
+        epochDuration = _epochDuration;
     }
 
     ////////////////// SETTER //////////////////
@@ -161,26 +182,9 @@ contract Vault is Ownable, ReentrancyGuard {
         authorized[_user] = _state;
     }
 
-    /// @notice Set the total number of users per distribution round
-    /// @param _totalUsersPerRound Total number of users per distribution round
-    function setTotalUsersPerRound(
-        uint _totalUsersPerRound
-    ) external onlyOwner {
-        require(
-            _totalUsersPerRound > 0 &&
-                _totalUsersPerRound != totalUsersPerRound,
-            "Invalid number of users"
-        );
-        totalUsersPerRound = _totalUsersPerRound;
-    }
-
     /// @notice Function to add a reward token
     /// @param _tokenAddress Address of the reward token
-    /// @param _minRewardThreshold Distribution rate of the reward token
-    function setRewardToken(
-        address _tokenAddress,
-        uint _minRewardThreshold
-    ) external onlyOwner {
+    function setRewardToken(address _tokenAddress) external onlyOwner {
         require(_tokenAddress != address(0), "Invalid token address");
         require(
             rewardTokens[_tokenAddress].tokenAddress == address(0),
@@ -190,15 +194,34 @@ contract Vault is Ownable, ReentrancyGuard {
         rewardTokens[_tokenAddress] = RewardToken({
             tokenAddress: _tokenAddress,
             availableRewards: 0,
-            minRewardThreshold: _minRewardThreshold
+            epochsLeft: 0
         });
         rewardTokenAddresses.push(_tokenAddress);
+    }
+
+    function removeRewardToken(address _tokenAddress) external onlyOwner {
+        require(_tokenAddress != address(0), "Invalid token address");
+        require(
+            rewardTokens[_tokenAddress].tokenAddress != address(0),
+            "Token not added"
+        );
+
+        delete rewardTokens[_tokenAddress];
+        for (uint i = 0; i < rewardTokenAddresses.length; i++) {
+            if (rewardTokenAddresses[i] == _tokenAddress) {
+                rewardTokenAddresses[i] = rewardTokenAddresses[
+                    rewardTokenAddresses.length - 1
+                ];
+                rewardTokenAddresses.pop();
+                break;
+            }
+        }
     }
 
     ////////////////// READ //////////////////
 
     function name() external view virtual returns (string memory) {
-        return "VeGMBase";
+        return "GMB Vault Token";
     }
 
     function decimals() external view virtual returns (uint8) {
@@ -206,7 +229,7 @@ contract Vault is Ownable, ReentrancyGuard {
     }
 
     function symbol() external view virtual returns (string memory) {
-        return "VEGMB";
+        return "GMBee";
     }
 
     /**
@@ -240,6 +263,20 @@ contract Vault is Ownable, ReentrancyGuard {
             "Query block number is in the future"
         );
         return _getAdjustedLockedTokens(user, blockNumber);
+    }
+
+    function getEpochRewards(
+        uint256 epochId
+    )
+        external
+        view
+        returns (address[] memory, uint256[] memory, uint256[] memory)
+    {
+        return (
+            epochRewardsInfo[epochId].rewardTokens,
+            epochRewardsInfo[epochId].rewardAmounts,
+            epochRewardsInfo[epochId].rewardsClaimed
+        );
     }
 
     ////////////////// AUXILIARY //////////////////
@@ -280,7 +317,7 @@ contract Vault is Ownable, ReentrancyGuard {
         uint currentBlock = block.number;
         totalAdjustedLockedTokens = 0;
 
-        for (uint i = 0; i < usersCounter; i++) {
+        for (uint i = 0; i < activeUsers.length; i++) {
             totalAdjustedLockedTokens += _getAdjustedLockedTokens(
                 activeUsers[i],
                 currentBlock
@@ -295,14 +332,54 @@ contract Vault is Ownable, ReentrancyGuard {
      * @param user The address of the user to remove
      */
     function _removeActiveUser(address user) internal {
-        for (uint i = 0; i < usersCounter; i++) {
+        for (uint i = 0; i < activeUsers.length; i++) {
             if (activeUsers[i] == user) {
-                activeUsers[i] = activeUsers[usersCounter - 1];
-                delete activeUsers[usersCounter - 1];
-                usersCounter--;
+                activeUsers[i] = activeUsers[activeUsers.length - 1];
+                activeUsers.pop();
                 break;
             }
         }
+    }
+
+    function initializeEpochZero(uint256 _startBlock) external onlyOwner {
+        uint256 endBlock = _startBlock + epochDuration;
+        epochs[0] = Epoch({
+            startBlock: _startBlock,
+            endBlock: endBlock,
+            totalSupplyAtStart: 0
+        });
+    }
+
+    function finalizeEpoch() external onlyOwner {
+        Epoch memory epoch = epochs[currentEpochId];
+        require(epoch.startBlock != 0, "Epoch not initialized.");
+        require(block.number > epoch.endBlock, "Epoch has not ended.");
+
+        EpochRewards storage epochRewards = epochRewardsInfo[currentEpochId];
+
+        if (currentEpochId > 0) {
+            for (uint i = 0; i < rewardTokenAddresses.length; i++) {
+                address token = rewardTokenAddresses[i];
+                RewardToken storage rewardToken = rewardTokens[token];
+                if (rewardToken.epochsLeft == 0) {
+                    continue;
+                }
+                uint256 rewards = rewardToken.availableRewards /
+                    rewardToken.epochsLeft;
+                rewardToken.availableRewards -= rewards;
+                rewardToken.epochsLeft--;
+
+                epochRewards.rewardTokens.push(token);
+                epochRewards.rewardAmounts.push(rewards);
+                epochRewards.rewardsClaimed.push(0);
+            }
+        }
+        currentEpochId++;
+        Epoch storage nextEpoch = epochs[currentEpochId];
+        nextEpoch.startBlock = block.number;
+        nextEpoch.endBlock = block.number + epochDuration;
+        nextEpoch.totalSupplyAtStart = totalSupply();
+        emit EpochFinalized(currentEpochId - 1);
     }
 
     ////////////////// MAIN //////////////////
@@ -316,7 +393,10 @@ contract Vault is Ownable, ReentrancyGuard {
     /// @param _amount Token Amount to deposit
     function lockTokens(uint _amount) external nonReentrant {
         require(_amount >= MIN_LOCK_AMOUNT, "Amount below minimum requirement");
-        require(usersCounter < MAX_ACTIVE_USERS, "Max users limit reached");
+        require(
+            activeUsers.length <= maxActiveUsers,
+            "Max users limit reached"
+        );
         require(
             vaultToken.balanceOf(msg.sender) >= _amount,
             "Insufficient ERC20 balance"
@@ -338,14 +418,14 @@ contract Vault is Ownable, ReentrancyGuard {
         vaultToken.safeTransferFrom(msg.sender, address(this), netAmount);
 
         // Manage active users
-        activeUsers[usersCounter] = msg.sender;
-        usersCounter++;
+        activeUsers.push(msg.sender);
 
         userLockInfo[msg.sender] = UserLock(
             netAmount,
             netAmount,
             block.number,
-            block.number + LOCK_PERIOD
+            block.number + LOCK_PERIOD,
+            0
         );
         totalLockedTokens += netAmount;
 
@@ -403,7 +483,9 @@ contract Vault is Ownable, ReentrancyGuard {
             // calculate the new virtual principal
             uint elapsedTime = block.number - lock.lockStartBlock;
             uint totalDuration = lock.lockEndBlock - lock.lockStartBlock;
-            uint virtualPrincipal = lock.lockedTokens + (lock.lockedTokens * elapsedTime) / totalDuration;
+            uint virtualPrincipal = lock.lockedTokens +
+                (lock.lockedTokens * elapsedTime) /
+                totalDuration;
 
             lock.virtualLockedTokens = virtualPrincipal;
             lock.lockEndBlock = block.number + LOCK_PERIOD;
@@ -412,128 +494,47 @@ contract Vault is Ownable, ReentrancyGuard {
         }
     }
 
-    /// @notice Function to distribute rewards to users
-    /// @param token Address of the token to distribute
-    function distributeRewards(
-        address token
-    ) external nonReentrant onlyAuthorized {
-        RewardToken storage rewardToken = rewardTokens[token];
-        uint256 rewardsBalance = rewardToken.availableRewards;
-        require(rewardsBalance > 0, "No rewards available to distribute");
-
-        uint256 totalVeTokens = totalSupply();
-
-        require(totalVeTokens > 0, "No veTokens to distribute rewards to");
-        require(
-            IERC20(token).balanceOf(address(this)) >= rewardsBalance,
-            "Insufficient rewards available"
-        );
-
-        rewardToken.availableRewards = 0;
-
-        uint loopLimit = totalUsersPerRound > 0 && totalUsersPerRound < usersCounter
-            ? totalUsersPerRound
-            : usersCounter;
-
-        // Distribute proportionally
-        for (uint i = 0; i < loopLimit; i++) {
-            address user = activeUsers[i];
-            uint balance = balanceOf(user);
-            if (balance > 0) {
-                uint userShare = (balance * rewardsBalance) / totalVeTokens;
-                if (userShare >= rewardToken.minRewardThreshold) {
-                    IERC20(token).safeTransfer(user, userShare);
-                    emit RewardsDistributed(user, token, userShare);
-                }
-            }
-        }
-
-        rewardDistributions[distributionRounds] = RewardDistribution({
-            rewardToken: rewardToken.tokenAddress,
-            availableRewards: rewardsBalance,
-            lastUserIndex: loopLimit,
-            blockNumber: block.number,
-            usersCountAtBlock: usersCounter,
-            totalSupplyAtBlock: totalVeTokens
-        });
-
-        distributionRounds++;
-    }
-
-    /// @notice Function to continue reward distribution
-    /// @param distributionRound Index of the round to complete
-    function continueDistributingRewards(
-        uint distributionRound
-    ) external nonReentrant onlyOwner {
-        RewardDistribution storage distributionInfo = rewardDistributions[
-            distributionRound
-        ];
-        RewardToken memory rewardToken = rewardTokens[
-            distributionInfo.rewardToken
-        ];
-
-        require(
-            distributionInfo.lastUserIndex < distributionInfo.usersCountAtBlock,
-            "Tokens for this round have already been distributed!"
-        );
-
-        uint loopLimit = totalUsersPerRound > 0 && totalUsersPerRound < distributionInfo.usersCountAtBlock - distributionInfo.lastUserIndex
-            ? totalUsersPerRound
-            : distributionInfo.usersCountAtBlock -
-                distributionInfo.lastUserIndex;
-
-        // Distribute proportionally
-        for (uint i = distributionInfo.lastUserIndex; i < loopLimit; i++) {
-            address user = activeUsers[i];
-            uint balance = balanceOfAt(user, distributionInfo.blockNumber);
-            if (balance > 0) {
-                uint userShare = (balance * distributionInfo.availableRewards) /
-                    distributionInfo.totalSupplyAtBlock;
-                if (userShare >= rewardToken.minRewardThreshold) {
-                    IERC20(rewardToken.tokenAddress).safeTransfer(
-                        user,
-                        userShare
-                    );
-                    emit RewardsDistributed(
-                        user,
-                        rewardToken.tokenAddress,
-                        userShare
-                    );
-                }
-            }
-        }
-
-        // update just what was changed
-        distributionInfo.lastUserIndex = loopLimit;
-    }
-
     /// @notice Function to fund rewards
     /// @param token Address of the token
     /// @param amount Amount of tokens to fund
     function fundRewards(
         address token,
+        uint numberEpochs,
         uint amount
     ) external nonReentrant onlyOwner {
         require(
             rewardTokens[token].tokenAddress != address(0),
             "Token not added as a reward token"
         );
-        require(
-            IERC20(token).allowance(msg.sender, address(this)) >= amount,
-            "Check the token allowance. Approval required."
-        );
 
-        // Transfer the funds from the owner to the contract
-        IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+        if (numberEpochs > 0) {
+            rewardTokens[token].epochsLeft += numberEpochs;
+        }
 
-        // Update total available rewards for the specified token
-        rewardTokens[token].availableRewards += amount;
+        if (amount > 0) {
+            require(
+                IERC20(token).balanceOf(msg.sender) >= amount,
+                "Insufficient balance"
+            );
 
-        emit RewardsFunded(token, amount);
+            require(
+                IERC20(token).allowance(msg.sender, address(this)) >= amount,
+                "Check the token allowance. Approval required."
+            );
+
+            // Transfer the funds from the owner to the contract
+            IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
+
+            // Update total available rewards for the specified token
+            rewardTokens[token].availableRewards += amount;
+        }
+
+        emit RewardsFunded(token, amount, numberEpochs);
     }
 
     /// @notice Emergency unlock function to unlock tokens
     /// @param user Address of the user
+    // What about the rewards?
     function emergencyUnlock(address user) external nonReentrant onlyOwner {
         require(
             block.number >
@@ -551,7 +552,7 @@ contract Vault is Ownable, ReentrancyGuard {
     }
 
     /// @notice Claim unlocked tokens
-    function claimTokens() external nonReentrant {
+    function unlockTokens() external nonReentrant {
         require(
             block.number > userLockInfo[msg.sender].lockEndBlock,
             "Tokens are still locked"
@@ -570,6 +571,31 @@ contract Vault is Ownable, ReentrancyGuard {
         emit TokensUnlocked(msg.sender, amount);
     }
 
+    function claimRewards() external {
+        uint256 _epochId = userLockInfo[msg.sender].lastClaimedEpoch + 1;
+        require(_epochId < currentEpochId, "Rewards already claimed");
+        require(
+            userLockInfo[msg.sender].lockedTokens > 0,
+            "No locked tokens found"
+        );
+
+        EpochRewards storage epochRewards = epochRewardsInfo[_epochId];
+        for (uint i = 0; i < epochRewards.rewardTokens.length; i++) {
+            // get the epoch start block
+            uint256 userRewards = (epochRewards.rewardAmounts[i] *
+                balanceOfAt(msg.sender, epochs[_epochId].startBlock)) /
+                epochs[_epochId].totalSupplyAtStart;
+            epochRewards.rewardsClaimed[i] += userRewards;
+            IERC20(epochRewards.rewardTokens[i]).safeTransfer(
+                msg.sender,
+                userRewards
+            );
+        }
+
+        userLockInfo[msg.sender].lastClaimedEpoch = _epochId;
+        emit RewardsClaimed(msg.sender, _epochId);
+    }
+
     /// @notice Withdraw ERC-20 Token to the owner
     /// @param _tokenContract ERC-20 Token address
     function withdrawERC20(
@@ -579,20 +605,14 @@ contract Vault is Ownable, ReentrancyGuard {
             _tokenContract != address(vaultToken),
             "Cannot withdraw the vaultToken"
         );
+        require(
+            rewardTokens[_tokenContract].tokenAddress == address(0),
+            "Cannot withdraw reward tokens"
+        );
 
         uint balance = IERC20(_tokenContract).balanceOf(address(this));
-        uint rewardBalance = rewardTokens[_tokenContract].availableRewards;
 
-        if (rewardBalance > 0) {
-            // Ensure the requested amount to withdraw is the remaining excess
-            require(balance > rewardBalance, "Cannot withdraw rewards");
-
-            // Withdraw only the excess amount
-            IERC20(_tokenContract).safeTransfer(
-                msg.sender,
-                balance - rewardBalance
-            );
-        } else {
+        if (balance > 0) {
             // Withdraw the entire balance if it's not a reward token
             IERC20(_tokenContract).safeTransfer(msg.sender, balance);
         }
