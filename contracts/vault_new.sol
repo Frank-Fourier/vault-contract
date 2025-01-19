@@ -3,7 +3,7 @@ pragma solidity 0.8.20;
 
 /**
  * @title  Vault
- * @author Rekt/KurgerBing69/FrankFourier
+ * @author Rekt/FrankFourier
  */
 
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -22,15 +22,11 @@ contract Vault is Ownable, ReentrancyGuard {
     uint public constant LOCK_PERIOD = 600; //for testing on base
     /// @notice Minimum tokens required for locking
     uint public constant MIN_LOCK_AMOUNT = 1_000 * 10 ** 18;
-    /// @notice Max number of users who can lock tokens
-    uint public maxActiveUsers = 1_000;
     /// @notice Deposit fee percentage
     uint public constant DEPOSIT_FEE_PERCENT = 1;
     /// @dev Maps and state variables
     /// @notice Fee beneficiary
     address public feeBeneficiary;
-    /// @notice Number of reward distributions
-    uint public distributionRounds;
     /// @notice Locked tokens
     uint public totalLockedTokens;
     /// @notice Current epoch id
@@ -41,16 +37,10 @@ contract Vault is Ownable, ReentrancyGuard {
     address[] public activeUsers;
     /// @notice Array to store reward token addresses
     address[] public rewardTokenAddresses;
-    /// @notice Array to store vault token addresses
-    address[] public vaultTokenAddresses;
 
     /// @notice Stores user token lock details
     struct UserLock {
         uint256 lockedTokens; ///< Amount of tokens locked
-        address[] lockedTokensAddresses;
-        uint256[] lockedTokensAmounts;
-        uint256[] lockedTokensEndBlocks;
-        uint256[] lockedTokensStartBlocks;
         uint256 virtualLockedTokens; ///< Virtual principal amount
         uint256 lockStartBlock; ///< Start time when tokens were locked
         uint256 lockEndBlock; ///< End time when tokens will be unlocked
@@ -75,12 +65,6 @@ contract Vault is Ownable, ReentrancyGuard {
         uint256 endBlock;
         uint256 totalSupplyAtStart;
     }
-    /// @notice Struct to store vault token details
-    struct VaultToken {
-        address tokenAddress;
-        uint conversionRate;
-        uint epochsLeft;
-    }
 
     /// @notice Mapping of user addresses to their respective lock information
     mapping(address => UserLock) public userLockInfo;
@@ -88,13 +72,10 @@ contract Vault is Ownable, ReentrancyGuard {
     mapping(address => bool) public authorized;
     /// @notice Mapping to store reward token details
     mapping(address => RewardToken) public rewardTokens;
-    /// @notice Mapping to store vault token details
-    mapping(address => VaultToken) public vaultTokens;
     /// @notice Mapping to store epoch details
     mapping(uint256 => Epoch) public epochs;
     /// @notice Mapping to store epoch rewards details
     mapping(uint256 => EpochRewards) internal epochRewardsInfo;
-
 
     /// @notice Erc20 token to lock in the Vault
     IERC20 public immutable vaultToken;
@@ -105,7 +86,6 @@ contract Vault is Ownable, ReentrancyGuard {
     event Transfer(address indexed from, address indexed to, uint256 value);
     /// @notice Event emitted when user deposit fund to our vault
     event TokensLocked(address indexed user, uint amount, uint lockEndBlock);
-
     /// @notice Event emitted when user extends lock period or add amount
     event LockExtended(
         address indexed user,
@@ -494,6 +474,30 @@ contract Vault is Ownable, ReentrancyGuard {
         }
     }
 
+function votingPower(uint256 _tokenId) public view returns (uint256) {
+        Lock storage userLock = locks[_tokenId];
+        if (block.timestamp >= userLock.endTimestamp) return 0;
+
+        uint256 timeElapsed = block.timestamp - userLock.startTimestamp;
+        uint256 totalLockTime = userLock.endTimestamp - userLock.startTimestamp;
+        uint256 timeRemaining = userLock.endTimestamp - block.timestamp;
+
+        // Calculate the decaying multiplier
+        uint256 decayedMultiplier = (userLock.multiplier * timeRemaining) / totalLockTime;
+
+        return (userLock.amount * decayedMultiplier) / 10000;
+    }
+
+function totalVotingPower(address _user) public view returns (uint256) {
+        uint256 total = 0;
+        uint256 balance = balanceOf(_user);
+        for (uint256 i = 0; i < balance; i++) {
+            uint256 tokenId = tokenOfOwnerByIndex(_user, i);
+            total += votingPower(tokenId);
+        }
+        return total;
+    }
+
     /// @notice Function to fund rewards
     /// @param token Address of the token
     /// @param amount Amount of tokens to fund
@@ -618,5 +622,27 @@ contract Vault is Ownable, ReentrancyGuard {
         }
 
         emit ERC20Withdrawn(_tokenContract, balance);
+    }
+
+/// @notice Get the adjusted balance of locked tokens for a user at a specific block
+    /// @param user The address of the user
+    /// @param blockNumber The block number at which to evaluate the balance
+    /// @return The adjusted amount of locked tokens at the given block
+    function balanceOfAt(
+        address user,
+        uint blockNumber
+    ) public view returns (uint) {
+        UserLock memory lock = userLockInfo[user];
+        if (
+            blockNumber > lock.lockEndBlock ||
+            lock.lockedTokens == 0 ||
+            blockNumber <= lock.lockStartBlock
+        ) {
+            return 0;
+        } else {
+            uint256 elapsed = blockNumber - lock.lockStartBlock;
+            uint256 totalDuration = lock.lockEndBlock - lock.lockStartBlock;
+            return (lock.virtualLockedTokens * elapsed) / totalDuration;
+        }
     }
 }
