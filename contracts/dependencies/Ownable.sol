@@ -2,7 +2,7 @@
 // OpenZeppelin Contracts (last updated v4.9.0) (access/Ownable.sol)
 // Modified
 
-pragma solidity ^0.8.0;
+pragma solidity 0.8.20;
 
 import "@openzeppelin/contracts/utils/Context.sol";
 

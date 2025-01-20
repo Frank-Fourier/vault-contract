@@ -1,7 +1,13 @@
 async function main() {
-    const HelloWorld = await ethers.getContractFactory("Vault");
-    const hello_world = await HelloWorld.deploy("0x64358a8Dd8AabEb7181be9d4341AC2aD87Fd8bC2", "0x33B7D46c8Ee49C7781A01CbAc18535F9A65dB642","0x64358a8Dd8AabEb7181be9d4341AC2aD87Fd8bC2");
-    console.log("Contract Deployed to Address:", hello_world.address);
+    const Vault = await ethers.getContractFactory("Vault");
+    const vault = await Vault.deploy(
+        "0x64358a8Dd8AabEb7181be9d4341AC2aD87Fd8bC2", // _token
+        100, // _depositFeeRate (example value, adjust as needed)
+        "0xYourVaultAdminAddress", // _vaultAdmin (replace with actual admin address)
+        "0xYourFactoryAddress", // _factory (replace with actual factory address)
+        "0xYourFeeBeneficiaryAddress" // _feeBeneficiary (replace with actual fee beneficiary address)
+    );
+    console.log("Vault Contract Deployed to Address:", vault.address);
 }
 main()
     .then(() => process.exit(0))
