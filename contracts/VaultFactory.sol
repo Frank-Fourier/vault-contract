@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.20;
 
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./dependencies/Ownable.sol";
 import "./Vault.sol";
 
@@ -11,7 +11,7 @@ import "./Vault.sol";
  */
 contract VaultFactory is Ownable, ReentrancyGuard {
     /// @notice List of approved partners
-    mapping(address => bool) public approvedPartners;
+    mapping(address => bool) public approvedPartners; // at some point we can disable the whitelist so that anyone can create a vault
     /// @notice Address of the main Vault
     address public mainVaultAddress;
     /// @notice Address of the main fee beneficiary
@@ -41,7 +41,7 @@ contract VaultFactory is Ownable, ReentrancyGuard {
     constructor(
         address _owner,
         address _mainVaultAddress,
-        address _mainFeeBeneficiary,
+        address _mainFeeBeneficiary
     ) {
         require(_mainVaultAddress != address(0), "Invalid main vault address");
         require(_mainFeeBeneficiary != address(0), "Invalid main fee beneficiary");
@@ -51,6 +51,7 @@ contract VaultFactory is Ownable, ReentrancyGuard {
 
         mainVaultAddress = _mainVaultAddress;
         mainFeeBeneficiary = _mainFeeBeneficiary;
+        approvedPartners[_owner] = true;
     }
 
     /**
@@ -97,7 +98,7 @@ contract VaultFactory is Ownable, ReentrancyGuard {
         address _vaultToken,
         uint256 _depositFeeRate,
         address _vaultAdmin,
-        address _feeBeneficiary,
+        address _feeBeneficiary
     ) external nonReentrant returns (address) {
         require(approvedPartners[msg.sender], "VaultFactory: not an approved partner");
         require(_vaultToken != address(0), "VaultFactory: invalid token address");
@@ -108,7 +109,7 @@ contract VaultFactory is Ownable, ReentrancyGuard {
             _vaultToken,
             _depositFeeRate,
             _vaultAdmin,
-            address(this), // Pass the factory's address
+            address(this),
             _feeBeneficiary
         );
 

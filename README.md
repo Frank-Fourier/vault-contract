@@ -1,12 +1,29 @@
 # Vault and VaultFactory Contracts
 
-A robust and dynamic smart contract system for token locking on the Ethereum blockchain. This project consists of two main components: the `Vault` contract for locking tokens and managing user participation, and the `VaultFactory` contract for creating and managing multiple `Vault` instances. 
+A robust smart contract system for token locking with linear decay voting power mechanics. This project consists of two main components: the `Vault` contract for locking tokens and managing user participation, and the `VaultFactory` contract for creating and managing multiple `Vault` instances. 
 
 ## Overview
 
 The `Vault` contract allows users to lock their tokens for a specified duration, providing them with voting power that decays over time. This design encourages users to re-lock their tokens to maintain or increase their voting power, thereby enhancing governance participation.
 
 The `VaultFactory` contract serves as a factory for creating new `Vault` instances, allowing approved partners to deploy vaults with specific parameters.
+
+## Core Mechanics
+
+### Voting Power Mechanism
+- **Linear Decay**: Voting power decreases linearly from deposit until lock end
+- **Lock Extension**: Users can extend their lock duration or add more tokens to maintain/increase voting power
+- **Peak Power**: Initial voting power is proportional to locked amount and duration
+
+### Epoch System
+- **Reward Distribution**: Epochs allow for periodic reward distribution based on voting power
+- **Participation**: Users can participate in epochs to earn rewards
+- **Dynamic Power Calculation**: Voting power is calculated using the area under the decay curve
+
+### Fee Structure
+- Split fee system between vault-specific beneficiary and main beneficiary
+- Configurable deposit fee rate
+- Fees collected on deposits
 
 ## Features
 

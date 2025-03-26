@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.20;
 
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 interface IERC20 {
     function transfer(address to, uint256 amount) external returns (bool);
@@ -10,7 +10,7 @@ interface IERC20 {
     function allowance(address owner, address spender) external view returns (uint256);
 }
 
-interface VaultFactory {
+interface IVaultFactory {
     function mainFeeBeneficiary() external view returns (address);
 }
 
@@ -21,7 +21,7 @@ interface VaultFactory {
  */
 contract Vault is ReentrancyGuard {
     IERC20 public immutable token;
-    VaultFactory public immutable factory;
+    IVaultFactory public immutable factory;
 
     /// @notice Define an admin for this vault:
     address public vaultAdmin;
@@ -31,6 +31,9 @@ contract Vault is ReentrancyGuard {
 
     /// @notice The deposit fee rate in basis points (e.g. 100 = 1%)
     uint256 public depositFeeRate;
+
+    /// @notice Maximum fee rate allowed in basis points (e.g., 2000 = 20%)
+    uint256 public constant MAX_FEE_RATE = 2000; // Maximum fee rate in basis points (e.g., 2000 = 20%)
 
     /// @notice Max Epoch Duration
     uint256 public constant MAX_EPOCH_DURATION = 8 weeks;
@@ -53,6 +56,9 @@ contract Vault is ReentrancyGuard {
     /// @notice State variable to track if the vault is paused
     bool public paused = false;
 
+    /// @notice State variable to track if emergency withdraw is enabled
+    bool public emergencyWithdrawEnabled;
+
     struct UserLock {
         uint256 amount; // Total tokens locked.
         uint256 lockStart; // Timestamp when lock started.
@@ -70,7 +76,7 @@ contract Vault is ReentrancyGuard {
     }
 
     /// @notice Mapping to store user locks based on their address
-    mapping(address => UserLock) public userLocks;
+    mapping(address => UserLock) private userLocks;
     
     /// @notice Mapping to store user's voting power in each epoch
     mapping(address => mapping(uint256 => uint256)) public userEpochVotingPower;
@@ -106,6 +112,45 @@ contract Vault is ReentrancyGuard {
     /// @param user The address of the user who claimed the rewards.
     /// @param epochId The ID of the epoch from which rewards were claimed.
     event RewardsClaimed(address indexed user, uint256 indexed epochId);
+
+    /// @notice Event emitted when a user participates in an epoch.
+    /// @param user The address of the user who participated.
+    /// @param epochId The ID of the epoch in which the user participated.
+    /// @param votingPower The voting power of the user in the epoch.
+    event Participated(address indexed user, uint256 indexed epochId, uint256 votingPower);
+
+    /// @notice Event emitted when vault admin is changed.
+    /// @param oldAdmin The address of the previous admin.
+    /// @param newAdmin The address of the new admin.
+    event VaultAdminChanged(address indexed oldAdmin, address indexed newAdmin);
+
+    /// @notice Event emitted when fee rate is updated.
+    /// @param oldRate The previous fee rate in basis points.
+    /// @param newRate The new fee rate in basis points.
+    event DepositFeeRateUpdated(uint256 oldRate, uint256 newRate);
+
+    /// @notice Event emitted when fee beneficiary is updated.
+    /// @param oldBeneficiary The address of the previous fee beneficiary.
+    /// @param newBeneficiary The address of the new fee beneficiary.
+    event FeeBeneficiaryUpdated(address indexed oldBeneficiary, address indexed newBeneficiary);
+
+    /// @notice Event emitted when vault is paused or unpaused.
+    /// @param isPaused A boolean indicating the current status of the vault; true if paused, false if unpaused.
+    event VaultStatusChanged(bool isPaused);
+
+    /// @notice Event emitted when emergency withdraw is enabled.
+    /// @param enabledBy The address of the admin who enabled emergency withdrawal.
+    event EmergencyWithdrawEnabled(address indexed enabledBy);
+
+    /// @notice Event emitted when emergency withdrawal of other tokens occurs.
+    /// @param token The address of the token being withdrawn.
+    /// @param amount The amount of tokens withdrawn.
+    event EmergencyTokenWithdraw(address indexed token, uint256 amount);
+
+    /// @notice Event emitted when emergency withdrawal of locked tokens occurs.
+    /// @param user The address of the user withdrawing their locked tokens.
+    /// @param amount The amount of locked tokens withdrawn.
+    event EmergencyPrincipalWithdraw(address indexed user, uint256 amount);
 
     /**
      * @dev Modifier to make a function callable only by the vault admin.
@@ -154,11 +199,12 @@ contract Vault is ReentrancyGuard {
         require(_vaultAdmin != address(0), "Vault: invalid admin");
         require(_factory != address(0), "Vault: invalid factory");
         require(_feeBeneficiary != address(0), "Vault: invalid beneficiary");
+        require(_depositFeeRate <= MAX_FEE_RATE, "Vault: fee rate too high");
 
         token = IERC20(_token);
         depositFeeRate = _depositFeeRate;
         vaultAdmin = _vaultAdmin;
-        factory = VaultFactory(_factory);
+        factory = IVaultFactory(_factory);
         feeBeneficiaryAddress = _feeBeneficiary;
     }
 
@@ -178,6 +224,7 @@ contract Vault is ReentrancyGuard {
         uint256 fee = (_amount * depositFeeRate) / 10000;
         uint256 netAmount = _amount - fee;
 
+        require(token.allowance(msg.sender, address(this)) >= _amount, "Vault: insufficient allowance");
         require(token.transferFrom(msg.sender, address(this), _amount), "Vault: transfer failed");
         if (fee > 0) {
             require(token.transfer(feeBeneficiaryAddress, fee / 2), "Vault: fee transfer failed");
@@ -204,12 +251,13 @@ contract Vault is ReentrancyGuard {
      * @param _duration Lock duration in seconds.
      */
     function expandLock(uint256 _additionalAmount, uint256 _duration) external nonReentrant whenNotPaused {
-        require(_additionalAmount > 0 || _duration > 0, "Vault: either one should be positive")
+        require(_additionalAmount > 0 || _duration > 0, "Vault: either one should be positive");
 
         if (_additionalAmount > 0) {
             uint256 fee = _additionalAmount * depositFeeRate / 10000;
             uint256 netAmount = _additionalAmount - fee;
 
+            require(token.allowance(msg.sender, address(this)) >= _additionalAmount, "Vault: insufficient allowance");
             require(token.transferFrom(msg.sender, address(this), netAmount), "Vault: transfer failed");
             if (fee > 0) {
                 require(token.transfer(feeBeneficiaryAddress, fee/2), "Vault: fee transfer failed");
@@ -262,7 +310,7 @@ contract Vault is ReentrancyGuard {
 
         _updateUserEpochPower(msg.sender);
 
-        emit Participated(msg.sender, currentEpochId, medianVotingPower);
+        emit Participated(msg.sender, currentEpochId, userEpochVotingPower[msg.sender][currentEpochId]);
     }
 
     /*
@@ -295,7 +343,7 @@ contract Vault is ReentrancyGuard {
 
         // If user wants to set a new end time that is > oldLockEnd we set new lockEnd
         // If not, we keep the old lockEnd
-        if (_newEnd > oldLockEnd) {
+        if (_newEnd > lockData.lockEnd) {
             lockData.lockEnd = _newEnd;
         }
 
@@ -321,6 +369,7 @@ contract Vault is ReentrancyGuard {
         UserLock storage lockData = userLocks[_user];
         Epoch storage epoch = epochs[currentEpochId];
         if (epoch.endTime <= block.timestamp) return;
+        if (lockData.amount == 0) return;
 
         // 1. Subtract old power from epoch total
         uint256 oldUserPower = userEpochVotingPower[_user][currentEpochId];
@@ -332,9 +381,6 @@ contract Vault is ReentrancyGuard {
         } else {
             lockData.epochsToClaim.push(currentEpochId);
         }
-
-        UserLock storage lockData = userLocks[_user];
-        if (lockData.amount == 0) return;
 
         uint256 effectiveStart = lockData.lockStart > epoch.startTime ? lockData.lockStart : epoch.startTime;
         uint256 effectiveEnd = lockData.lockEnd < epoch.endTime ? lockData.lockEnd : epoch.endTime;
@@ -390,9 +436,9 @@ contract Vault is ReentrancyGuard {
             if (userEpochVotingPower[_user][currentEpochId] == 0) {
                 uint256 epochsToClaimLength = lockData.epochsToClaim.length;
                 for (uint256 i = 0; i < epochsToClaimLength; i++) {
-                    if (epochsToClaim[i] == currentEpochId) {
-                        epochsToClaim[i] = lockData.epochsToClaim[epochsToClaimLength - 1];
-                        epochsToClaim.pop();
+                    if (lockData.epochsToClaim[i] == currentEpochId) {
+                        lockData.epochsToClaim[i] = lockData.epochsToClaim[epochsToClaimLength - 1];
+                        lockData.epochsToClaim.pop();
                         break;
                     }
                 }
@@ -479,9 +525,9 @@ contract Vault is ReentrancyGuard {
         uint256 rewardLength = epoch.rewardTokens.length;
 
         // Transfer the user’s share of each reward token
-        for (uint256 i = 0; i < rewardLength; i++) {
-            IERC20 rewardToken = IERC20(epoch.rewardTokens[i]);
-            uint256 totalReward = epoch.rewardAmounts[i];
+        for (uint256 j = 0; j < rewardLength; j++) {
+            IERC20 rewardToken = IERC20(epoch.rewardTokens[j]);
+            uint256 totalReward = epoch.rewardAmounts[j];
             // user share
             // make sure there are no rounding errors leading to error here
             uint256 userShare = (totalReward * userPower) / totalPower;
@@ -591,6 +637,7 @@ contract Vault is ReentrancyGuard {
     function setVaultAdmin(address _newAdmin) external onlyVaultAdmin {
         require(_newAdmin != address(0), "Zero address");
         vaultAdmin = _newAdmin;
+        emit VaultAdminChanged(vaultAdmin, _newAdmin);
     }
 
     /**
@@ -598,8 +645,9 @@ contract Vault is ReentrancyGuard {
      * @param _newFeeRate The new deposit fee rate in basis points (e.g., 2000 = 20%).
      */
     function setDepositFeeRate(uint256 _newFeeRate) external onlyVaultAdmin {
-        require(_newFeeRate <= 2000, "Vault: fee rate too high");
+        require(_newFeeRate <= MAX_FEE_RATE, "Vault: fee rate too high");
         depositFeeRate = _newFeeRate;
+        emit DepositFeeRateUpdated(depositFeeRate, _newFeeRate);
     }
 
     /**
@@ -609,20 +657,33 @@ contract Vault is ReentrancyGuard {
     function setFeeBeneficiaryAddress(address _newFeeBeneficiary) external onlyVaultAdmin {
         require(_newFeeBeneficiary != address(0), "Vault: invalid fee beneficiary address");
         feeBeneficiaryAddress = _newFeeBeneficiary;
+        emit FeeBeneficiaryUpdated(feeBeneficiaryAddress, _newFeeBeneficiary);
+    }
+
+    /**
+     * @dev Enables emergency withdrawal for all users
+     */
+    function enableEmergencyWithdraw() external onlyVaultAdmin whenPaused {
+        require(!emergencyWithdrawEnabled, "Vault: emergency withdraw already enabled");
+        emergencyWithdrawEnabled = true;
+        emit EmergencyWithdrawEnabled(msg.sender);
     }
 
     /**
      * @dev Pauses the vault.
      */
-    function pause() external onlyVaultAdmin {
+    function pause() external onlyVaultAdmin whenNotPaused {
         paused = true;
+        emit VaultStatusChanged(true);
     }
 
     /**
      * @dev Unpauses the vault.
      */
-    function unpause() external onlyVaultAdmin {
+    function unpause() external onlyVaultAdmin whenPaused {
+        require(!emergencyWithdrawEnabled, "Vault: cannot unpause after emergency withdraw enabled");
         paused = false;
+        emit VaultStatusChanged(false);
     }
 
     /**
@@ -631,9 +692,23 @@ contract Vault is ReentrancyGuard {
      * @param _amount Amount of tokens to withdraw.
      */
     function emergencyWithdraw(address _token, uint256 _amount) external onlyVaultAdmin whenPaused {
+        require(emergencyWithdrawEnabled, "Vault: emergency withdraw not enabled");
+        require(_token != address(token), "Vault: cannot withdraw vault token");
         require(_amount > 0, "Vault: amount must be greater than 0");
         require(IERC20(_token).balanceOf(address(this)) >= _amount, "Vault: insufficient balance");
-
         require(IERC20(_token).transfer(vaultAdmin, _amount), "Vault: transfer failed");
+        emit EmergencyTokenWithdraw(_token, _amount);
+    }
+
+    /**
+     * @dev Emergency withdrawal of locked principal by users
+     */
+    function emergencyPrincipalWithdraw() external nonReentrant whenPaused {
+        require(emergencyWithdrawEnabled, "Vault: emergency withdraw not enabled");
+        UserLock storage lock = userLocks[msg.sender];
+        require(lock.amount > 0, "Vault: no active lock");
+
+        require(token.transfer(msg.sender, lock.amount), "Vault: transfer failed");
+        emit EmergencyPrincipalWithdraw(msg.sender, lock.amount);
     }
 }
