@@ -2,12 +2,24 @@
 pragma solidity 0.8.20;
 
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 
 interface IERC20 {
     function transfer(address to, uint256 amount) external returns (bool);
-    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 amount
+    ) external returns (bool);
+
     function balanceOf(address account) external view returns (uint256);
-    function allowance(address owner, address spender) external view returns (uint256);
+
+    function allowance(
+        address owner,
+        address spender
+    ) external view returns (uint256);
 }
 
 interface IVaultFactory {
@@ -19,13 +31,13 @@ interface IVaultFactory {
  * @dev A contract that locks user tokens for a specified duration and provides linear decaying voting power.
  *      Users can participate in epochs to earn rewards distributed proportionally to their voting power.
  */
-contract Vault is ReentrancyGuard {
+contract Vault is ReentrancyGuard, IERC721Receiver {
     IERC20 public immutable token;
     IVaultFactory public immutable factory;
 
     /// @notice Define an admin for this vault:
     address public vaultAdmin;
-    
+
     /// @notice Fee beneficiary address
     address public feeBeneficiaryAddress;
 
@@ -59,12 +71,18 @@ contract Vault is ReentrancyGuard {
     /// @notice State variable to track if emergency withdraw is enabled
     bool public emergencyWithdrawEnabled;
 
+    struct NFTLock {
+        address collection; // NFT collection address
+        uint256 tokenId;   // NFT token ID
+    }
+
     struct UserLock {
         uint256 amount; // Total tokens locked.
         uint256 lockStart; // Timestamp when lock started.
         uint256 lockEnd; // Timestamp when lock ends.
         uint256 peakVotingPower; // Max voting power at deposit/extension.
         uint256[] epochsToClaim; // Epochs the user can claim rewards from.
+        NFTLock[] lockedNFTs; // Array of locked NFTs
     }
 
     struct Epoch {
@@ -77,7 +95,7 @@ contract Vault is ReentrancyGuard {
 
     /// @notice Mapping to store user locks based on their address
     mapping(address => UserLock) private userLocks;
-    
+
     /// @notice Mapping to store user's voting power in each epoch
     mapping(address => mapping(uint256 => uint256)) public userEpochVotingPower;
 
@@ -94,7 +112,11 @@ contract Vault is ReentrancyGuard {
     /// @param user The address of the user who extended the lock.
     /// @param newAmount The new total amount of tokens locked.
     /// @param newLockEnd The new lock end time.
-    event ExtendedLock(address indexed user, uint256 newAmount, uint256 newLockEnd);
+    event ExtendedLock(
+        address indexed user,
+        uint256 newAmount,
+        uint256 newLockEnd
+    );
 
     /// @notice Event emitted when tokens are withdrawn from the vault.
     /// @param user The address of the user who withdrew the tokens.
@@ -106,7 +128,12 @@ contract Vault is ReentrancyGuard {
     /// @param rewardTokens The list of reward tokens for the epoch.
     /// @param rewardAmounts The corresponding reward amounts for the epoch.
     /// @param endTime The end time of the epoch.
-    event EpochStarted(uint256 indexed epochId, address[] rewardTokens, uint256[] rewardAmounts, uint256 endTime);
+    event EpochStarted(
+        uint256 indexed epochId,
+        address[] rewardTokens,
+        uint256[] rewardAmounts,
+        uint256 endTime
+    );
 
     /// @notice Event emitted when rewards are claimed by a user.
     /// @param user The address of the user who claimed the rewards.
@@ -117,7 +144,11 @@ contract Vault is ReentrancyGuard {
     /// @param user The address of the user who participated.
     /// @param epochId The ID of the epoch in which the user participated.
     /// @param votingPower The voting power of the user in the epoch.
-    event Participated(address indexed user, uint256 indexed epochId, uint256 votingPower);
+    event Participated(
+        address indexed user,
+        uint256 indexed epochId,
+        uint256 votingPower
+    );
 
     /// @notice Event emitted when vault admin is changed.
     /// @param oldAdmin The address of the previous admin.
@@ -132,7 +163,10 @@ contract Vault is ReentrancyGuard {
     /// @notice Event emitted when fee beneficiary is updated.
     /// @param oldBeneficiary The address of the previous fee beneficiary.
     /// @param newBeneficiary The address of the new fee beneficiary.
-    event FeeBeneficiaryUpdated(address indexed oldBeneficiary, address indexed newBeneficiary);
+    event FeeBeneficiaryUpdated(
+        address indexed oldBeneficiary,
+        address indexed newBeneficiary
+    );
 
     /// @notice Event emitted when vault is paused or unpaused.
     /// @param isPaused A boolean indicating the current status of the vault; true if paused, false if unpaused.
@@ -151,6 +185,34 @@ contract Vault is ReentrancyGuard {
     /// @param user The address of the user withdrawing their locked tokens.
     /// @param amount The amount of locked tokens withdrawn.
     event EmergencyPrincipalWithdraw(address indexed user, uint256 amount);
+
+    /// @notice Event emitted when additional rewards are added to an epoch.
+    /// @param epochId The ID of the epoch rewards were added to.
+    /// @param rewardTokens The additional reward tokens added.
+    /// @param rewardAmounts The additional reward amounts added.
+    event RewardsAddedToEpoch(
+        uint256 indexed epochId,
+        address[] rewardTokens,
+        uint256[] rewardAmounts
+    );
+
+    /// @notice Event emitted when an NFT is deposited into the vault.
+    /// @param user The address of the user who deposited the NFT.
+    /// @param collection The address of the NFT collection.
+    /// @param tokenId The token ID of the deposited NFT.
+    event NFTDeposited(address indexed user, address indexed collection, uint256 indexed tokenId);
+
+    /// @notice Event emitted when an NFT is withdrawn from the vault.
+    /// @param user The address of the user who withdrew the NFT.
+    /// @param collection The address of the NFT collection.
+    /// @param tokenId The token ID of the withdrawn NFT.
+    event NFTWithdrawn(address indexed user, address indexed collection, uint256 indexed tokenId);
+
+    /// @notice Event emitted when emergency withdrawal of NFTs occurs.
+    /// @param user The address of the user withdrawing their locked NFTs.
+    /// @param collection The address of the NFT collection.
+    /// @param tokenId The token ID of the emergency withdrawn NFT.
+    event EmergencyNFTWithdraw(address indexed user, address indexed collection, uint256 indexed tokenId);
 
     /**
      * @dev Modifier to make a function callable only by the vault admin.
@@ -208,6 +270,23 @@ contract Vault is ReentrancyGuard {
         feeBeneficiaryAddress = _feeBeneficiary;
     }
 
+    /**
+     * @dev Handle the receipt of an NFT
+     * @param operator The address which called `safeTransferFrom` function
+     * @param from The address which previously owned the token
+     * @param tokenId The NFT identifier which is being transferred
+     * @param data Additional data with no specified format
+     * @return bytes4 `bytes4(keccak256("onERC721Received(address,address,uint256,bytes)"))`
+     */
+    function onERC721Received(
+        address operator,
+        address from,
+        uint256 tokenId,
+        bytes calldata data
+    ) external pure override returns (bytes4) {
+        return IERC721Receiver.onERC721Received.selector;
+    }
+
     /*
      * ==========  MAIN FUNCTIONS  ==========
      */
@@ -217,18 +296,36 @@ contract Vault is ReentrancyGuard {
      * @param _amount Amount of tokens to deposit.
      * @param _duration Lock duration in seconds.
      */
-    function deposit(uint256 _amount, uint256 _duration) external nonReentrant whenNotPaused {
+    function deposit(
+        uint256 _amount,
+        uint256 _duration
+    ) external nonReentrant whenNotPaused {
         require(_amount >= MIN_LOCK_AMOUNT, "Vault: amount too small");
-        require(_duration >= MIN_LOCK_DURATION && _duration <= MAX_LOCK_DURATION, "Vault: invalid duration");
+        require(
+            _duration >= MIN_LOCK_DURATION && _duration <= MAX_LOCK_DURATION,
+            "Vault: invalid duration"
+        );
 
         uint256 fee = (_amount * depositFeeRate) / 10000;
         uint256 netAmount = _amount - fee;
 
-        require(token.allowance(msg.sender, address(this)) >= _amount, "Vault: insufficient allowance");
-        require(token.transferFrom(msg.sender, address(this), _amount), "Vault: transfer failed");
+        require(
+            token.allowance(msg.sender, address(this)) >= _amount,
+            "Vault: insufficient allowance"
+        );
+        require(
+            token.transferFrom(msg.sender, address(this), _amount),
+            "Vault: transfer failed"
+        );
         if (fee > 0) {
-            require(token.transfer(feeBeneficiaryAddress, fee / 2), "Vault: fee transfer failed");
-            require(token.transfer(factory.mainFeeBeneficiary(), fee / 2), "Vault: fee transfer failed");
+            require(
+                token.transfer(feeBeneficiaryAddress, fee / 2),
+                "Vault: fee transfer failed"
+            );
+            require(
+                token.transfer(factory.mainFeeBeneficiary(), fee / 2),
+                "Vault: fee transfer failed"
+            );
         }
 
         UserLock storage lock = userLocks[msg.sender];
@@ -250,27 +347,49 @@ contract Vault is ReentrancyGuard {
      * @param _additionalAmount Amount of tokens to deposit.
      * @param _duration Lock duration in seconds.
      */
-    function expandLock(uint256 _additionalAmount, uint256 _duration) external nonReentrant whenNotPaused {
-        require(_additionalAmount > 0 || _duration > 0, "Vault: either one should be positive");
+    function expandLock(
+        uint256 _additionalAmount,
+        uint256 _duration
+    ) external nonReentrant whenNotPaused {
+        require(
+            _additionalAmount > 0 || _duration > 0,
+            "Vault: either one should be positive"
+        );
 
         if (_additionalAmount > 0) {
-            uint256 fee = _additionalAmount * depositFeeRate / 10000;
+            uint256 fee = (_additionalAmount * depositFeeRate) / 10000;
             uint256 netAmount = _additionalAmount - fee;
 
-            require(token.allowance(msg.sender, address(this)) >= _additionalAmount, "Vault: insufficient allowance");
-            require(token.transferFrom(msg.sender, address(this), netAmount), "Vault: transfer failed");
+            require(
+                token.allowance(msg.sender, address(this)) >= _additionalAmount,
+                "Vault: insufficient allowance"
+            );
+            require(
+                token.transferFrom(msg.sender, address(this), netAmount),
+                "Vault: transfer failed"
+            );
             if (fee > 0) {
-                require(token.transfer(feeBeneficiaryAddress, fee/2), "Vault: fee transfer failed");
-                require(token.transfer(factory.mainFeeBeneficiary(), fee/2), "Vault: fee transfer failed");
+                require(
+                    token.transfer(feeBeneficiaryAddress, fee / 2),
+                    "Vault: fee transfer failed"
+                );
+                require(
+                    token.transfer(factory.mainFeeBeneficiary(), fee / 2),
+                    "Vault: fee transfer failed"
+                );
             }
 
-            _expandLock(msg.sender, _additionalAmount, _duration == 0 ? 0 : block.timestamp + _duration);
+            _expandLock(
+                msg.sender,
+                _additionalAmount,
+                _duration == 0 ? 0 : block.timestamp + _duration
+            );
         } else {
             // purely extend lock time
             _expandLock(msg.sender, 0, block.timestamp + _duration);
         }
 
-        // Update user’s epoch contribution if there’s an active epoch
+        // Update user's epoch contribution if there's an active epoch
         _updateUserEpochPower(msg.sender);
     }
 
@@ -285,12 +404,25 @@ contract Vault is ReentrancyGuard {
         uint256 withdrawable = lock.amount;
         _reduceUserEpochPower(msg.sender);
 
+        // Transfer all locked NFTs back to user
+        uint256 nftCount = lock.lockedNFTs.length;
+        for (uint256 i = 0; i < nftCount; i++) {
+            NFTLock memory nftLock = lock.lockedNFTs[i];
+            IERC721(nftLock.collection).safeTransferFrom(address(this), msg.sender, nftLock.tokenId);
+            emit NFTWithdrawn(msg.sender, nftLock.collection, nftLock.tokenId);
+        }
+
+        // Clear user lock data
         lock.amount = 0;
         lock.lockEnd = 0;
         lock.lockStart = 0;
         lock.peakVotingPower = 0;
+        delete lock.lockedNFTs;
 
-        require(token.transfer(msg.sender, withdrawable), "Vault: transfer failed");
+        require(
+            token.transfer(msg.sender, withdrawable),
+            "Vault: transfer failed"
+        );
         emit Withdrawn(msg.sender, withdrawable);
     }
 
@@ -306,11 +438,116 @@ contract Vault is ReentrancyGuard {
         require(lockData.amount > 0, "Vault: no active lock");
         require(block.timestamp < lockData.lockEnd, "Vault: lock has ended");
         require(block.timestamp < epoch.endTime, "Vault: epoch is ended");
-        require(userEpochVotingPower[msg.sender][currentEpochId] == 0, "Vault: already registered for this epoch");
+        require(
+            userEpochVotingPower[msg.sender][currentEpochId] == 0,
+            "Vault: already registered for this epoch"
+        );
 
         _updateUserEpochPower(msg.sender);
 
-        emit Participated(msg.sender, currentEpochId, userEpochVotingPower[msg.sender][currentEpochId]);
+        emit Participated(
+            msg.sender,
+            currentEpochId,
+            userEpochVotingPower[msg.sender][currentEpochId]
+        );
+    }
+
+    /*
+     * ==========  NFT FUNCTIONS  ==========
+     */
+
+    /**
+     * @dev Deposits an NFT into the vault alongside existing token lock.
+     * @param _collection Address of the NFT collection.
+     * @param _tokenId Token ID of the NFT to deposit.
+     */
+    function depositNFT(address _collection, uint256 _tokenId) external nonReentrant whenNotPaused {
+        require(_collection != address(0), "Vault: invalid collection address");
+        
+        UserLock storage lock = userLocks[msg.sender];
+        require(lock.amount > 0, "Vault: must have active token lock first");
+        require(block.timestamp < lock.lockEnd, "Vault: token lock has expired");
+        
+        // Verify ownership and get approval
+        IERC721 nftContract = IERC721(_collection);
+        require(nftContract.ownerOf(_tokenId) == msg.sender, "Vault: not NFT owner");
+        require(
+            nftContract.getApproved(_tokenId) == address(this) || 
+            nftContract.isApprovedForAll(msg.sender, address(this)),
+            "Vault: NFT not approved"
+        );
+        
+        // Check if NFT is already locked by this user
+        uint256 nftCount = lock.lockedNFTs.length;
+        for (uint256 i = 0; i < nftCount; i++) {
+            require(
+                !(lock.lockedNFTs[i].collection == _collection && lock.lockedNFTs[i].tokenId == _tokenId),
+                "Vault: NFT already locked"
+            );
+        }
+        
+        // Transfer NFT to vault
+        nftContract.safeTransferFrom(msg.sender, address(this), _tokenId);
+        
+        // Add NFT to user's lock
+        lock.lockedNFTs.push(NFTLock({
+            collection: _collection,
+            tokenId: _tokenId
+        }));
+        
+        emit NFTDeposited(msg.sender, _collection, _tokenId);
+    }
+
+    /**
+     * @dev Withdraws a specific NFT from the vault.
+     * @param _collection Address of the NFT collection.
+     * @param _tokenId Token ID of the NFT to withdraw.
+     */
+    function withdrawNFT(address _collection, uint256 _tokenId) external nonReentrant whenNotPaused {
+        UserLock storage lock = userLocks[msg.sender];
+        require(lock.amount > 0, "Vault: no active lock");
+        require(block.timestamp >= lock.lockEnd, "Vault: lock not ended");
+        
+        // Find and remove the NFT from user's locked NFTs
+        uint256 nftCount = lock.lockedNFTs.length;
+        bool nftFound = false;
+        
+        for (uint256 i = 0; i < nftCount; i++) {
+            if (lock.lockedNFTs[i].collection == _collection && lock.lockedNFTs[i].tokenId == _tokenId) {
+                // Transfer NFT back to user
+                IERC721(_collection).safeTransferFrom(address(this), msg.sender, _tokenId);
+                
+                // Remove NFT from array by swapping with last element and popping
+                lock.lockedNFTs[i] = lock.lockedNFTs[nftCount - 1];
+                lock.lockedNFTs.pop();
+                
+                nftFound = true;
+                emit NFTWithdrawn(msg.sender, _collection, _tokenId);
+                break;
+            }
+        }
+        
+        require(nftFound, "Vault: NFT not found in user's lock");
+    }
+
+    /**
+     * @dev Withdraws all NFTs when withdrawing tokens.
+     */
+    function withdrawAllNFTs() external nonReentrant whenNotPaused {
+        UserLock storage lock = userLocks[msg.sender];
+        require(lock.amount > 0, "Vault: no active lock");
+        require(block.timestamp >= lock.lockEnd, "Vault: lock not ended");
+        
+        // Transfer all locked NFTs back to user
+        uint256 nftCount = lock.lockedNFTs.length;
+        for (uint256 i = 0; i < nftCount; i++) {
+            NFTLock memory nftLock = lock.lockedNFTs[i];
+            IERC721(nftLock.collection).safeTransferFrom(address(this), msg.sender, nftLock.tokenId);
+            emit NFTWithdrawn(msg.sender, nftLock.collection, nftLock.tokenId);
+        }
+        
+        // Clear the NFT array
+        delete lock.lockedNFTs;
     }
 
     /*
@@ -324,20 +561,23 @@ contract Vault is ReentrancyGuard {
      * @param _newEnd New lock end time. Set to 0 if not used.
      */
     function _expandLock(
-        address _user, 
-        uint256 _extraAmount, 
+        address _user,
+        uint256 _extraAmount,
         uint256 _newEnd
     ) internal {
         UserLock storage lockData = userLocks[_user];
         require(lockData.amount > 0, "Vault: no existing lock");
         if (_newEnd < block.timestamp) {
-            require(lockData.lockEnd > block.timestamp, "Vault: current lock expired extend it first");
+            require(
+                lockData.lockEnd > block.timestamp,
+                "Vault: current lock expired extend it first"
+            );
         }
         // Refresh current voting power
         // Then we recalc the new peakVotingPower as old leftover + new deposit
         uint256 currentVotingPower = getCurrentVotingPower(_user);
 
-        // The new peakVotingPower can be considered as the current voting power 
+        // The new peakVotingPower can be considered as the current voting power
         // "carried forward" plus the new deposit.  For simplicity, let's just set:
         lockData.peakVotingPower = currentVotingPower + _extraAmount;
 
@@ -359,9 +599,9 @@ contract Vault is ReentrancyGuard {
     }
 
     /**
-     * @dev Updates user’s epoch voting power for the current active epoch.
-     *      Called whenever user deposits, extends, withdraws. 
-     *      Adjusts the vault’s total voting power in that epoch as well.
+     * @dev Updates user's epoch voting power for the current active epoch.
+     *      Called whenever user deposits, extends, withdraws.
+     *      Adjusts the vault's total voting power in that epoch as well.
      */
     function _updateUserEpochPower(address _user) internal {
         // If no active epoch, skip
@@ -375,15 +615,19 @@ contract Vault is ReentrancyGuard {
         uint256 oldUserPower = userEpochVotingPower[_user][currentEpochId];
 
         if (oldUserPower > 0) {
-            epoch.totalVotingPower = epoch.totalVotingPower > oldUserPower 
-                ? epoch.totalVotingPower - oldUserPower 
+            epoch.totalVotingPower = epoch.totalVotingPower > oldUserPower
+                ? epoch.totalVotingPower - oldUserPower
                 : 0;
         } else {
             lockData.epochsToClaim.push(currentEpochId);
         }
 
-        uint256 effectiveStart = lockData.lockStart > epoch.startTime ? lockData.lockStart : epoch.startTime;
-        uint256 effectiveEnd = lockData.lockEnd < epoch.endTime ? lockData.lockEnd : epoch.endTime;
+        uint256 effectiveStart = lockData.lockStart > epoch.startTime
+            ? lockData.lockStart
+            : epoch.startTime;
+        uint256 effectiveEnd = lockData.lockEnd < epoch.endTime
+            ? lockData.lockEnd
+            : epoch.endTime;
 
         if (effectiveStart >= effectiveEnd) {
             userEpochVotingPower[_user][currentEpochId] = 0;
@@ -393,15 +637,16 @@ contract Vault is ReentrancyGuard {
         uint256 vpStart = getVotingPowerAtTime(_user, effectiveStart);
         uint256 vpEnd = getVotingPowerAtTime(_user, effectiveEnd);
 
-        uint256 areaUnderCurve = (vpStart + vpEnd) * (effectiveEnd - effectiveStart) / 2;
+        uint256 areaUnderCurve = ((vpStart + vpEnd) *
+            (effectiveEnd - effectiveStart)) / 2;
         userEpochVotingPower[_user][currentEpochId] = areaUnderCurve;
         epoch.totalVotingPower += areaUnderCurve;
     }
 
     /**
-     * @dev Updates user’s epoch voting power for the current active epoch.
-     *      Called whenever user deposits, extends, or withdraws. 
-     *      Adjusts the vault’s total voting power in that epoch as well.
+     * @dev Updates user's epoch voting power for the current active epoch.
+     *      Called whenever user deposits, extends, or withdraws.
+     *      Adjusts the vault's total voting power in that epoch as well.
      * @param _user Address of the user whose epoch voting power is being updated.
      */
     function _reduceUserEpochPower(address _user) internal {
@@ -417,7 +662,9 @@ contract Vault is ReentrancyGuard {
         uint256 oldUserPower = userEpochVotingPower[_user][currentEpochId];
         if (oldUserPower > 0) {
             uint256 effectiveStart = block.timestamp;
-            uint256 effectiveEnd = lockData.lockEnd < epoch.endTime ? lockData.lockEnd : epoch.endTime;
+            uint256 effectiveEnd = lockData.lockEnd < epoch.endTime
+                ? lockData.lockEnd
+                : epoch.endTime;
 
             if (effectiveStart >= effectiveEnd) {
                 return;
@@ -426,29 +673,34 @@ contract Vault is ReentrancyGuard {
             uint256 vpStart = getVotingPowerAtTime(_user, effectiveStart);
             uint256 vpEnd = getVotingPowerAtTime(_user, effectiveEnd);
 
-            uint256 areaUnderCurve = (vpStart + vpEnd) * (effectiveEnd - effectiveStart) / 2;
-            if (areaUnderCurve > oldUserPower) 
-            userEpochVotingPower[_user][currentEpochId] = 0;
-            userEpochVotingPower[_user][currentEpochId] = oldUserPower - areaUnderCurve;
+            uint256 areaUnderCurve = ((vpStart + vpEnd) *
+                (effectiveEnd - effectiveStart)) / 2;
+            if (areaUnderCurve > oldUserPower)
+                userEpochVotingPower[_user][currentEpochId] = 0;
+            userEpochVotingPower[_user][currentEpochId] =
+                oldUserPower -
+                areaUnderCurve;
             if (areaUnderCurve > epoch.totalVotingPower)
-            epoch.totalVotingPower = 0;
+                epoch.totalVotingPower = 0;
             epoch.totalVotingPower -= areaUnderCurve;
             if (userEpochVotingPower[_user][currentEpochId] == 0) {
                 uint256 epochsToClaimLength = lockData.epochsToClaim.length;
                 for (uint256 i = 0; i < epochsToClaimLength; i++) {
                     if (lockData.epochsToClaim[i] == currentEpochId) {
-                        lockData.epochsToClaim[i] = lockData.epochsToClaim[epochsToClaimLength - 1];
+                        lockData.epochsToClaim[i] = lockData.epochsToClaim[
+                            epochsToClaimLength - 1
+                        ];
                         lockData.epochsToClaim.pop();
                         break;
                     }
                 }
-            }          
+            }
         }
     }
 
     /*
      * ==========  EPOCH LOGIC  ==========
-     * 
+     *
      * Each epoch is started by the vault admin, specifying reward tokens and amounts.
      * Users' voting power is aggregated. When epoch ends, distribution is done.
      */
@@ -464,23 +716,45 @@ contract Vault is ReentrancyGuard {
         uint256[] calldata _rewardAmounts,
         uint256 _endTime
     ) external onlyVaultAdmin whenNotPaused {
-        require(_rewardTokens.length == _rewardAmounts.length, "Vault: mismatched arrays");
+        require(
+            _rewardTokens.length == _rewardAmounts.length,
+            "Vault: mismatched arrays"
+        );
         require(_endTime > block.timestamp, "Vault: invalid end time");
         require(
-            _endTime - block.timestamp >= MIN_EPOCH_DURATION && _endTime - block.timestamp <= MAX_EPOCH_DURATION,
+            _endTime - block.timestamp >= MIN_EPOCH_DURATION &&
+                _endTime - block.timestamp <= MAX_EPOCH_DURATION,
             "Vault: invalid epoch duration"
         );
 
         uint256 rewardTokensLength = _rewardTokens.length;
         for (uint256 i = 0; i < rewardTokensLength; i++) {
-            require(IERC20(_rewardTokens[i]).allowance(msg.sender, address(this)) >= _rewardAmounts[i], "Vault: insufficient allowance");
-            require(IERC20(_rewardTokens[i]).balanceOf(msg.sender) >= _rewardAmounts[i], "Vault: insufficient rewards");
-            require(IERC20(_rewardTokens[i]).transferFrom(msg.sender, address(this), _rewardAmounts[i]), "Vault: transfer failed");
+            require(
+                IERC20(_rewardTokens[i]).allowance(msg.sender, address(this)) >=
+                    _rewardAmounts[i],
+                "Vault: insufficient allowance"
+            );
+            require(
+                IERC20(_rewardTokens[i]).balanceOf(msg.sender) >=
+                    _rewardAmounts[i],
+                "Vault: insufficient rewards"
+            );
+            require(
+                IERC20(_rewardTokens[i]).transferFrom(
+                    msg.sender,
+                    address(this),
+                    _rewardAmounts[i]
+                ),
+                "Vault: transfer failed"
+            );
         }
 
         if (epochs.length > 0) {
             Epoch storage prevEpoch = epochs[currentEpochId];
-            require(prevEpoch.endTime <= block.timestamp, "Vault: previous epoch not ended");
+            require(
+                prevEpoch.endTime <= block.timestamp,
+                "Vault: previous epoch not ended"
+            );
         }
 
         epochs.push(
@@ -494,14 +768,86 @@ contract Vault is ReentrancyGuard {
         );
 
         currentEpochId = epochs.length - 1;
-        emit EpochStarted(currentEpochId, _rewardTokens, _rewardAmounts, _endTime);
+        emit EpochStarted(
+            currentEpochId,
+            _rewardTokens,
+            _rewardAmounts,
+            _endTime
+        );
+    }
+
+    /**
+     * @dev Adds additional rewards to an existing active epoch.
+     * @param _epochId The ID of the epoch to add rewards to.
+     * @param _rewardTokens List of additional reward token addresses.
+     * @param _rewardAmounts List of additional reward token amounts.
+     */
+    function addRewardsToEpoch(
+        uint256 _epochId,
+        address[] calldata _rewardTokens,
+        uint256[] calldata _rewardAmounts
+    ) external onlyVaultAdmin whenNotPaused {
+        require(_epochId < epochs.length, "Vault: invalid epoch ID");
+        require(
+            _rewardTokens.length == _rewardAmounts.length,
+            "Vault: mismatched arrays"
+        );
+
+        Epoch storage epoch = epochs[_epochId];
+        require(block.timestamp < epoch.endTime, "Vault: epoch has ended");
+
+        // Transfer the additional reward tokens
+        uint256 rewardTokensLength = _rewardTokens.length;
+        for (uint256 i = 0; i < rewardTokensLength; i++) {
+            require(
+                _rewardAmounts[i] > 0,
+                "Vault: reward amount must be positive"
+            );
+            require(
+                IERC20(_rewardTokens[i]).allowance(msg.sender, address(this)) >=
+                    _rewardAmounts[i],
+                "Vault: insufficient allowance"
+            );
+            require(
+                IERC20(_rewardTokens[i]).transferFrom(
+                    msg.sender,
+                    address(this),
+                    _rewardAmounts[i]
+                ),
+                "Vault: transfer failed"
+            );
+        }
+
+        // Add to existing rewards
+        for (uint256 i = 0; i < rewardTokensLength; i++) {
+            bool tokenExists = false;
+
+            // Check if token already exists in epoch
+            for (uint256 j = 0; j < epoch.rewardTokens.length; j++) {
+                if (epoch.rewardTokens[j] == _rewardTokens[i]) {
+                    epoch.rewardAmounts[j] += _rewardAmounts[i];
+                    tokenExists = true;
+                    break;
+                }
+            }
+
+            // If token doesn't exist, add it as new reward
+            if (!tokenExists) {
+                epoch.rewardTokens.push(_rewardTokens[i]);
+                epoch.rewardAmounts.push(_rewardAmounts[i]);
+            }
+        }
+
+        emit RewardsAddedToEpoch(_epochId, _rewardTokens, _rewardAmounts);
     }
 
     /**
      * @dev Claims rewards for a specific epoch.
      * @param _epochId Epoch ID to claim rewards from.
      */
-    function claimEpochRewards(uint256 _epochId) external nonReentrant whenNotPaused {
+    function claimEpochRewards(
+        uint256 _epochId
+    ) external nonReentrant whenNotPaused {
         require(_epochId < epochs.length, "Vault: invalid epoch ID");
 
         Epoch storage epoch = epochs[_epochId];
@@ -520,11 +866,14 @@ contract Vault is ReentrancyGuard {
 
         uint256 userPower = userEpochVotingPower[msg.sender][_epochId];
         uint256 totalPower = epoch.totalVotingPower;
-        
-        require(userPower != 0 && totalPower != 0, "Vault: no rewards available");
+
+        require(
+            userPower != 0 && totalPower != 0,
+            "Vault: no rewards available"
+        );
         uint256 rewardLength = epoch.rewardTokens.length;
 
-        // Transfer the user’s share of each reward token
+        // Transfer the user's share of each reward token
         for (uint256 j = 0; j < rewardLength; j++) {
             IERC20 rewardToken = IERC20(epoch.rewardTokens[j]);
             uint256 totalReward = epoch.rewardAmounts[j];
@@ -533,18 +882,23 @@ contract Vault is ReentrancyGuard {
             uint256 userShare = (totalReward * userPower) / totalPower;
             if (userShare > 0) {
                 // here make sure also that the math will not leave error of accuracy
-                require(rewardToken.balanceOf(address(this)) >= userShare, "Vault: insufficient reward balance");
+                require(
+                    rewardToken.balanceOf(address(this)) >= userShare,
+                    "Vault: insufficient reward balance"
+                );
                 rewardToken.transfer(msg.sender, userShare);
             }
         }
         // Remove the epochID from the list of epochs to claim
-        userLock.epochsToClaim[i] = userLock.epochsToClaim[epochsToClaimLength - 1];
+        userLock.epochsToClaim[i] = userLock.epochsToClaim[
+            epochsToClaimLength - 1
+        ];
         userLock.epochsToClaim.pop();
 
         emit RewardsClaimed(msg.sender, _epochId);
     }
 
-    /* 
+    /*
      * ==========  READ FUNCTIONS  ==========
      */
 
@@ -553,16 +907,21 @@ contract Vault is ReentrancyGuard {
      *      The voting power decays linearly from lockStart to lockEnd.
      * @param _user The address of the user.
      */
-    function getCurrentVotingPower(address _user) public view returns(uint256) {
+    function getCurrentVotingPower(
+        address _user
+    ) public view returns (uint256) {
         return getVotingPowerAtTime(_user, block.timestamp);
     }
 
     /**
-     * @dev Gets the user’s voting power at a specific future timestamp.
+     * @dev Gets the user's voting power at a specific future timestamp.
      * @param _user The address of the user.
      * @param _time The future timestamp to check the voting power at.
      */
-    function getVotingPowerAtTime(address _user, uint256 _time) public view returns(uint256) {
+    function getVotingPowerAtTime(
+        address _user,
+        uint256 _time
+    ) public view returns (uint256) {
         UserLock memory lockData = userLocks[_user];
         if (lockData.amount == 0) {
             return 0;
@@ -577,14 +936,18 @@ contract Vault is ReentrancyGuard {
             return 0;
         }
         // linear decay
-        return lockData.peakVotingPower * (lockDuration - timeSinceLock) / lockDuration;
+        return
+            (lockData.peakVotingPower * (lockDuration - timeSinceLock)) /
+            lockDuration;
     }
 
     /**
-     * @dev Returns the number of epochs.
+     * @dev Returns the user information including locked NFTs.
      * @param _user Address of the user.
      */
-    function getUserInfo(address _user)
+    function getUserInfo(
+        address _user
+    )
         external
         view
         returns (
@@ -592,11 +955,54 @@ contract Vault is ReentrancyGuard {
             uint256 lockStart,
             uint256 lockEnd,
             uint256 peakVotingPower,
-            uint256[] memory epochsToClaim
+            uint256[] memory epochsToClaim,
+            NFTLock[] memory lockedNFTs
         )
     {
         UserLock storage lock = userLocks[_user];
-        return (lock.amount, lock.lockStart, lock.lockEnd, lock.peakVotingPower, lock.epochsToClaim);
+        return (
+            lock.amount,
+            lock.lockStart,
+            lock.lockEnd,
+            lock.peakVotingPower,
+            lock.epochsToClaim,
+            lock.lockedNFTs
+        );
+    }
+
+    /**
+     * @dev Returns the locked NFTs for a user.
+     * @param _user Address of the user.
+     */
+    function getUserNFTs(address _user) external view returns (NFTLock[] memory) {
+        return userLocks[_user].lockedNFTs;
+    }
+
+    /**
+     * @dev Returns the count of locked NFTs for a user.
+     * @param _user Address of the user.
+     */
+    function getUserNFTCount(address _user) external view returns (uint256) {
+        return userLocks[_user].lockedNFTs.length;
+    }
+
+    /**
+     * @dev Checks if a specific NFT is locked by a user.
+     * @param _user Address of the user.
+     * @param _collection Address of the NFT collection.
+     * @param _tokenId Token ID of the NFT.
+     */
+    function isNFTLocked(address _user, address _collection, uint256 _tokenId) external view returns (bool) {
+        UserLock storage lock = userLocks[_user];
+        uint256 nftCount = lock.lockedNFTs.length;
+        
+        for (uint256 i = 0; i < nftCount; i++) {
+            if (lock.lockedNFTs[i].collection == _collection && lock.lockedNFTs[i].tokenId == _tokenId) {
+                return true;
+            }
+        }
+        
+        return false;
     }
 
     /**
@@ -610,7 +1016,9 @@ contract Vault is ReentrancyGuard {
      * @dev Returns details of a specific epoch.
      * @param _epochId Epoch ID.
      */
-    function getEpochInfo(uint256 _epochId)
+    function getEpochInfo(
+        uint256 _epochId
+    )
         external
         view
         returns (
@@ -623,7 +1031,13 @@ contract Vault is ReentrancyGuard {
     {
         require(_epochId < epochs.length, "Vault: invalid epoch ID");
         Epoch memory epoch = epochs[_epochId];
-        return (epoch.startTime, epoch.endTime, epoch.totalVotingPower, epoch.rewardTokens, epoch.rewardAmounts);
+        return (
+            epoch.startTime,
+            epoch.endTime,
+            epoch.totalVotingPower,
+            epoch.rewardTokens,
+            epoch.rewardAmounts
+        );
     }
 
     /*
@@ -654,8 +1068,13 @@ contract Vault is ReentrancyGuard {
      * @dev Set the fee beneficiary address.
      * @param _newFeeBeneficiary The new fee beneficiary address.
      */
-    function setFeeBeneficiaryAddress(address _newFeeBeneficiary) external onlyVaultAdmin {
-        require(_newFeeBeneficiary != address(0), "Vault: invalid fee beneficiary address");
+    function setFeeBeneficiaryAddress(
+        address _newFeeBeneficiary
+    ) external onlyVaultAdmin {
+        require(
+            _newFeeBeneficiary != address(0),
+            "Vault: invalid fee beneficiary address"
+        );
         feeBeneficiaryAddress = _newFeeBeneficiary;
         emit FeeBeneficiaryUpdated(feeBeneficiaryAddress, _newFeeBeneficiary);
     }
@@ -664,7 +1083,10 @@ contract Vault is ReentrancyGuard {
      * @dev Enables emergency withdrawal for all users
      */
     function enableEmergencyWithdraw() external onlyVaultAdmin whenPaused {
-        require(!emergencyWithdrawEnabled, "Vault: emergency withdraw already enabled");
+        require(
+            !emergencyWithdrawEnabled,
+            "Vault: emergency withdraw already enabled"
+        );
         emergencyWithdrawEnabled = true;
         emit EmergencyWithdrawEnabled(msg.sender);
     }
@@ -681,7 +1103,10 @@ contract Vault is ReentrancyGuard {
      * @dev Unpauses the vault.
      */
     function unpause() external onlyVaultAdmin whenPaused {
-        require(!emergencyWithdrawEnabled, "Vault: cannot unpause after emergency withdraw enabled");
+        require(
+            !emergencyWithdrawEnabled,
+            "Vault: cannot unpause after emergency withdraw enabled"
+        );
         paused = false;
         emit VaultStatusChanged(false);
     }
@@ -691,12 +1116,24 @@ contract Vault is ReentrancyGuard {
      * @param _token Address of the token to withdraw.
      * @param _amount Amount of tokens to withdraw.
      */
-    function emergencyWithdraw(address _token, uint256 _amount) external onlyVaultAdmin whenPaused {
-        require(emergencyWithdrawEnabled, "Vault: emergency withdraw not enabled");
+    function emergencyWithdraw(
+        address _token,
+        uint256 _amount
+    ) external onlyVaultAdmin whenPaused {
+        require(
+            emergencyWithdrawEnabled,
+            "Vault: emergency withdraw not enabled"
+        );
         require(_token != address(token), "Vault: cannot withdraw vault token");
         require(_amount > 0, "Vault: amount must be greater than 0");
-        require(IERC20(_token).balanceOf(address(this)) >= _amount, "Vault: insufficient balance");
-        require(IERC20(_token).transfer(vaultAdmin, _amount), "Vault: transfer failed");
+        require(
+            IERC20(_token).balanceOf(address(this)) >= _amount,
+            "Vault: insufficient balance"
+        );
+        require(
+            IERC20(_token).transfer(vaultAdmin, _amount),
+            "Vault: transfer failed"
+        );
         emit EmergencyTokenWithdraw(_token, _amount);
     }
 
@@ -704,11 +1141,37 @@ contract Vault is ReentrancyGuard {
      * @dev Emergency withdrawal of locked principal by users
      */
     function emergencyPrincipalWithdraw() external nonReentrant whenPaused {
-        require(emergencyWithdrawEnabled, "Vault: emergency withdraw not enabled");
+        require(
+            emergencyWithdrawEnabled,
+            "Vault: emergency withdraw not enabled"
+        );
         UserLock storage lock = userLocks[msg.sender];
         require(lock.amount > 0, "Vault: no active lock");
 
-        require(token.transfer(msg.sender, lock.amount), "Vault: transfer failed");
+        require(
+            token.transfer(msg.sender, lock.amount),
+            "Vault: transfer failed"
+        );
         emit EmergencyPrincipalWithdraw(msg.sender, lock.amount);
+    }
+
+    /**
+     * @dev Emergency withdrawal of locked NFTs by users
+     */
+    function emergencyNFTWithdraw() external nonReentrant whenPaused {
+        require(emergencyWithdrawEnabled, "Vault: emergency withdraw not enabled");
+        UserLock storage lock = userLocks[msg.sender];
+        require(lock.lockedNFTs.length > 0, "Vault: no locked NFTs");
+
+        // Transfer all locked NFTs back to user
+        uint256 nftCount = lock.lockedNFTs.length;
+        for (uint256 i = 0; i < nftCount; i++) {
+            NFTLock memory nftLock = lock.lockedNFTs[i];
+            IERC721(nftLock.collection).safeTransferFrom(address(this), msg.sender, nftLock.tokenId);
+            emit EmergencyNFTWithdraw(msg.sender, nftLock.collection, nftLock.tokenId);
+        }
+        
+        // Clear the NFT array
+        delete lock.lockedNFTs;
     }
 }
