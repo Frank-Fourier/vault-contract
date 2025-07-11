@@ -1,23 +1,13 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.20;
+pragma solidity 0.8.28;
 
-import "./dependencies/ERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 contract Asset is ERC20, Ownable {
 
-    string private _symbol = "LOCK";
-
-    constructor() ERC20("Lock Token") Ownable(msg.sender) {
+    constructor() ERC20("Lock Token", "LOCK") Ownable(msg.sender) {
         _mint(msg.sender, 1_000_000_000 * 10 ** decimals());
-    }
-
-    function symbol() public view virtual returns (string memory) {
-        return _symbol;
-    }
-
-    function setSymbol(string memory symbol_) external onlyOwner {
-        _symbol = symbol_;
     }
 
     function mint(address to, uint amount) public {

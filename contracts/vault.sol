@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.20;
+pragma solidity 0.8.28;
 
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 
 interface IERC20 {
     function transfer(address to, uint256 amount) external returns (bool);
@@ -52,12 +53,9 @@ interface IVaultFactory {
  * @dev A contract that locks user tokens for a specified duration and provides linear decaying voting power.
  *      Users can participate in epochs to earn rewards distributed proportionally to their voting power.
  */
-contract Vault is ReentrancyGuard, IERC721Receiver {
+contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
     IERC20 public immutable token;
     IVaultFactory public immutable factory;
-
-    /// @notice Define an admin for this vault:
-    address public vaultAdmin;
 
     /// @notice Fee beneficiary address
     address public feeBeneficiaryAddress;
@@ -177,11 +175,6 @@ contract Vault is ReentrancyGuard, IERC721Receiver {
         uint256 votingPower
     );
 
-    /// @notice Event emitted when vault admin is changed.
-    /// @param oldAdmin The address of the previous admin.
-    /// @param newAdmin The address of the new admin.
-    event VaultAdminChanged(address indexed oldAdmin, address indexed newAdmin);
-
     /// @notice Event emitted when fee rate is updated.
     /// @param oldRate The previous fee rate in basis points.
     /// @param newRate The new fee rate in basis points.
@@ -270,7 +263,6 @@ contract Vault is ReentrancyGuard, IERC721Receiver {
     /// @notice Event emitted when a new vault top holder is set (cumulative)
     event NewVaultTopHolder(
         address indexed newTopHolder, 
-        address indexed previousTopHolder,
         uint256 cumulativePower
     );
 
@@ -294,14 +286,6 @@ contract Vault is ReentrancyGuard, IERC721Receiver {
 
     /// @notice Track which epochs each user has contributed their cumulative power to (prevent double-counting)
     mapping(address => mapping(uint256 => bool)) public userEpochContributed;
-
-    /**
-     * @dev Modifier to make a function callable only by the vault admin.
-     */
-    modifier onlyVaultAdmin() {
-        require(msg.sender == vaultAdmin, "Vault: Not vault admin");
-        _;
-    }
 
     /**
      * @dev Modifier to make a function callable only when the contract is not paused.
@@ -339,7 +323,7 @@ contract Vault is ReentrancyGuard, IERC721Receiver {
         address _factory,
         address _feeBeneficiary,
         IVaultFactory.VaultTier _tier
-    ) {
+    ) Ownable(_vaultAdmin) {
         require(_token != address(0), "Vault: invalid token");
         require(_vaultAdmin != address(0), "Vault: invalid admin");
         require(_factory != address(0), "Vault: invalid factory");
@@ -348,27 +332,9 @@ contract Vault is ReentrancyGuard, IERC721Receiver {
 
         token = IERC20(_token);
         depositFeeRate = _depositFeeRate;
-        vaultAdmin = _vaultAdmin;
         factory = IVaultFactory(_factory);
         feeBeneficiaryAddress = _feeBeneficiary;
         vaultTier = _tier;
-    }
-
-    /**
-     * @dev Handle the receipt of an NFT
-     * @param operator The address which called `safeTransferFrom` function
-     * @param from The address which previously owned the token
-     * @param tokenId The NFT identifier which is being transferred
-     * @param data Additional data with no specified format
-     * @return bytes4 `bytes4(keccak256("onERC721Received(address,address,uint256,bytes)"))`
-     */
-    function onERC721Received(
-        address operator,
-        address from,
-        uint256 tokenId,
-        bytes calldata data
-    ) external pure override returns (bytes4) {
-        return IERC721Receiver.onERC721Received.selector;
     }
 
     /*
@@ -758,11 +724,9 @@ contract Vault is ReentrancyGuard, IERC721Receiver {
             
             // Update vault top holder if this user now has highest cumulative power
             if (userCumulativeVotingPower[_user] > vaultTopHolderCumulativePower) {
-                address previousTopHolder = vaultTopHolder;
                 vaultTopHolder = _user;
                 vaultTopHolderCumulativePower = userCumulativeVotingPower[_user];
-                
-                emit NewVaultTopHolder(_user, previousTopHolder, userCumulativeVotingPower[_user]);
+                emit NewVaultTopHolder(_user, userCumulativeVotingPower[_user]);
             }
         }
     }
@@ -841,7 +805,7 @@ contract Vault is ReentrancyGuard, IERC721Receiver {
         uint256[] calldata _rewardAmounts,
         uint256 _endTime,
         uint256 _leaderboardPercentage
-    ) external onlyVaultAdmin whenNotPaused {
+    ) external onlyOwner whenNotPaused {
         require(_rewardTokens.length == _rewardAmounts.length, "Vault: mismatched arrays");
         require(_endTime > block.timestamp, "Vault: invalid end time");
         require(
@@ -911,7 +875,7 @@ contract Vault is ReentrancyGuard, IERC721Receiver {
         uint256 _epochId,
         address[] calldata _rewardTokens,
         uint256[] calldata _rewardAmounts
-    ) external onlyVaultAdmin whenNotPaused {
+    ) external onlyOwner whenNotPaused {
         require(_epochId < epochs.length, "Vault: invalid epoch ID");
         require(
             _rewardTokens.length == _rewardAmounts.length,
@@ -1311,21 +1275,11 @@ contract Vault is ReentrancyGuard, IERC721Receiver {
      */
 
     /**
-     * @dev Sets a new vault admin.
-     * @param _newAdmin The address of the new admin.
-     */
-    function setVaultAdmin(address _newAdmin) external onlyVaultAdmin {
-        require(_newAdmin != address(0), "Zero address");
-        vaultAdmin = _newAdmin;
-        emit VaultAdminChanged(vaultAdmin, _newAdmin);
-    }
-
-    /**
      * @dev Set the deposit fee rate with a maximum limit of 20%.
      * @param _newFeeRate The new deposit fee rate in basis points (e.g., 2000 = 20%).
      */
-    function setDepositFeeRate(uint256 _newFeeRate) external onlyVaultAdmin {
-        VaultFactory.TierConfig memory tierConfig = factory.getVaultTierConfig(address(this));
+    function setDepositFeeRate(uint256 _newFeeRate) external onlyOwner {
+        IVaultFactory.TierConfig memory tierConfig = factory.getVaultTierConfig(address(this));
         
         require(tierConfig.canAdjustDepositFee, "Vault: tier doesn't allow fee adjustment");
         require(
@@ -1345,7 +1299,7 @@ contract Vault is ReentrancyGuard, IERC721Receiver {
      */
     function setFeeBeneficiaryAddress(
         address _newFeeBeneficiary
-    ) external onlyVaultAdmin {
+    ) external onlyOwner {
         require(
             _newFeeBeneficiary != address(0),
             "Vault: invalid fee beneficiary address"
@@ -1357,7 +1311,7 @@ contract Vault is ReentrancyGuard, IERC721Receiver {
     /**
      * @dev Enables emergency withdrawal for all users
      */
-    function enableEmergencyWithdraw() external onlyVaultAdmin whenPaused {
+    function enableEmergencyWithdraw() external onlyOwner whenPaused {
         require(
             !emergencyWithdrawEnabled,
             "Vault: emergency withdraw already enabled"
@@ -1369,7 +1323,7 @@ contract Vault is ReentrancyGuard, IERC721Receiver {
     /**
      * @dev Pauses the vault.
      */
-    function pause() external onlyVaultAdmin whenNotPaused {
+    function pause() external onlyOwner whenNotPaused {
         paused = true;
         emit VaultStatusChanged(true);
     }
@@ -1377,7 +1331,7 @@ contract Vault is ReentrancyGuard, IERC721Receiver {
     /**
      * @dev Unpauses the vault.
      */
-    function unpause() external onlyVaultAdmin whenPaused {
+    function unpause() external onlyOwner whenPaused {
         require(
             !emergencyWithdrawEnabled,
             "Vault: cannot unpause after emergency withdraw enabled"
@@ -1394,7 +1348,7 @@ contract Vault is ReentrancyGuard, IERC721Receiver {
     function emergencyWithdraw(
         address _token,
         uint256 _amount
-    ) external onlyVaultAdmin whenPaused {
+    ) external onlyOwner whenPaused {
         require(
             emergencyWithdrawEnabled,
             "Vault: emergency withdraw not enabled"
@@ -1406,7 +1360,7 @@ contract Vault is ReentrancyGuard, IERC721Receiver {
             "Vault: insufficient balance"
         );
         require(
-            IERC20(_token).transfer(vaultAdmin, _amount),
+            IERC20(_token).transfer(owner(), _amount),
             "Vault: transfer failed"
         );
         emit EmergencyTokenWithdraw(_token, _amount);
@@ -1462,7 +1416,7 @@ contract Vault is ReentrancyGuard, IERC721Receiver {
         bool _isActive,
         uint256 _requiredCount,
         uint256 _boostPercentage
-    ) external onlyVaultAdmin {
+    ) external onlyOwner {
         require(_collection != address(0), "Vault: invalid collection address");
         require(_boostPercentage <= 10000, "Vault: boost percentage too high"); // Max 100%
         
@@ -1476,9 +1430,9 @@ contract Vault is ReentrancyGuard, IERC721Receiver {
     }
 
     /**
-     * @dev Calculates the total NFT boost percentage for a user.
-     * @param _user Address of the user.
-     * @return totalBoost Total boost percentage in basis points.
+     * @notice Calculates the total NFT boost for a user based on their locked NFTs and collection requirements.
+     * @param _user The address of the user.
+     * @return totalBoost The total boost percentage in basis points.
      */
     function getUserNFTBoost(address _user) public view returns (uint256 totalBoost) {
         UserLock storage lock = userLocks[_user];
@@ -1488,29 +1442,40 @@ contract Vault is ReentrancyGuard, IERC721Receiver {
             return 0;
         }
         
-        // Use mapping to count collections more efficiently
-        mapping(address => uint256) storage tempCollectionCounts;
-        address[] memory uniqueCollections = new address[](nftCount);
-        uint256 uniqueCount = 0;
+        // Track which collections we've already processed
+        address[] memory processedCollections = new address[](nftCount);
+        uint256 processedCount = 0;
         
-        // Single pass through NFTs to count by collection
         for (uint256 i = 0; i < nftCount; i++) {
             address collection = lock.lockedNFTs[i].collection;
             
-            if (tempCollectionCounts[collection] == 0) {
-                uniqueCollections[uniqueCount] = collection;
-                uniqueCount++;
+            // Check if we've already processed this collection
+            bool alreadyProcessed = false;
+            for (uint256 j = 0; j < processedCount; j++) {
+                if (processedCollections[j] == collection) {
+                    alreadyProcessed = true;
+                    break;
+                }
             }
-            tempCollectionCounts[collection]++;
-        }
-        
-        // Calculate boosts
-        for (uint256 i = 0; i < uniqueCount; i++) {
-            address collection = uniqueCollections[i];
-            NFTCollectionRequirement memory requirement = nftCollectionRequirements[collection];
             
-            if (requirement.isActive && tempCollectionCounts[collection] >= requirement.requiredCount) {
-                totalBoost += requirement.boostPercentage;
+            if (!alreadyProcessed) {
+                // Count NFTs for this collection
+                uint256 collectionCount = 0;
+                for (uint256 k = 0; k < nftCount; k++) {
+                    if (lock.lockedNFTs[k].collection == collection) {
+                        collectionCount++;
+                    }
+                }
+                
+                // Check if this collection meets the requirement
+                NFTCollectionRequirement memory requirement = nftCollectionRequirements[collection];
+                if (requirement.isActive && collectionCount >= requirement.requiredCount) {
+                    totalBoost += requirement.boostPercentage;
+                }
+                
+                // Mark this collection as processed
+                processedCollections[processedCount] = collection;
+                processedCount++;
             }
         }
         
@@ -1596,7 +1561,7 @@ contract Vault is ReentrancyGuard, IERC721Receiver {
             );
             
             // Check if NFT is already locked
-            require(!isNFTLocked(msg.sender, _collection, tokenId), "Vault: NFT already locked");
+            require(!this.isNFTLocked(msg.sender, _collection, tokenId), "Vault: NFT already locked");
             
             // Transfer NFT to vault
             nftContract.safeTransferFrom(msg.sender, address(this), tokenId);
@@ -1618,7 +1583,7 @@ contract Vault is ReentrancyGuard, IERC721Receiver {
      * @dev Removes/disables NFT collection requirement.
      * @param _collection Address of the NFT collection.
      */
-    function removeNFTCollectionRequirement(address _collection) external onlyVaultAdmin {
+    function removeNFTCollectionRequirement(address _collection) external onlyOwner {
         require(_collection != address(0), "Vault: invalid collection address");
         delete nftCollectionRequirements[_collection];
         emit NFTCollectionRequirementSet(_collection, false, 0, 0);
@@ -1646,4 +1611,16 @@ contract Vault is ReentrancyGuard, IERC721Receiver {
 
     /// @notice Event emitted when vault tier is updated
     event VaultTierUpdated(IVaultFactory.VaultTier indexed oldTier, IVaultFactory.VaultTier indexed newTier);
+
+    /**
+     * @dev Always returns `IERC721Receiver.onERC721Received.selector`.
+     */
+    function onERC721Received(
+        address,
+        address,
+        uint256,
+        bytes calldata
+    ) external pure override returns (bytes4) {
+        return IERC721Receiver.onERC721Received.selector;
+    }
 }
