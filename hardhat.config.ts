@@ -2,7 +2,7 @@ import { HardhatUserConfig } from 'hardhat/config';
 import '@nomicfoundation/hardhat-toolbox';
 
 require('dotenv').config({ path: __dirname + '/deployments/.env' });
-const { SEPOLIA_API_URL, PRIVATE_KEY, ETHERSCAN_API_KEY } = process.env;
+const { HOODI_API_URL, PRIVATE_KEY, ETHERSCAN_API_KEY } = process.env;
 
 const config: HardhatUserConfig = {
   solidity: {
@@ -10,23 +10,34 @@ const config: HardhatUserConfig = {
     settings: {
       optimizer: {
         enabled: true,
-        runs: 200,
+        runs: 10,
       },
     },
   },
-  defaultNetwork: 'sepolia',
+  defaultNetwork: 'hardhat',
   networks: {
-    sepolia: {
-      url: SEPOLIA_API_URL,
-      accounts: [`0x${PRIVATE_KEY}`],
+    hoodi: {
+      url: HOODI_API_URL,
+      accounts: PRIVATE_KEY ? [`0x${PRIVATE_KEY}`] : [],
+      chainId: 560048,
       gasMultiplier: 10,
     },
   },
   etherscan: {
     apiKey: {
-      sepolia: ETHERSCAN_API_KEY,
+      hoodi: ETHERSCAN_API_KEY || '',
     },
-  }
+    customChains: [
+      {
+        network: 'hoodi',
+        chainId: 560048,
+        urls: {
+          apiURL: 'https://api.etherscan.io/v2/api?chainid=560048',
+          browserURL: 'https://etherscan.io',
+        },
+      },
+    ],
+  },
 };
 
 export default config;

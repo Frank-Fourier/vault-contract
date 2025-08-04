@@ -7,6 +7,12 @@ interface IVault {
         uint256 tokenId;
     }
 
+    struct NFTCollectionRequirement {
+        bool isActive;
+        uint256 requiredCount;
+        uint256 boostPercentage;
+    }
+
     enum VaultTier {
         NO_RISK_NO_CROWN,
         SPLIT_THE_SPOILS,
@@ -25,8 +31,6 @@ interface IVault {
             NFTLock[] memory lockedNFTs
         );
 
-    function getEpochCount() external view returns (uint256);
-
     function getEpochInfo(uint256 _epochId)
         external
         view
@@ -41,19 +45,13 @@ interface IVault {
             bool leaderboardClaimed
         );
 
-    function getVaultLeaderboard(address _user)
-        external
-        view
-        returns (
-            address topHolder,
-            uint256 topHolderCumulativePower,
-            uint256 userRank,
-            uint256 userCumulativePower
-        );
-
     function userCumulativeVotingPower(address _user) external view returns (uint256);
 
     function userEpochContributed(address _user, uint256 _epochId) external view returns (bool);
+
+    function nftCollectionRequirements(address) external view returns (NFTCollectionRequirement memory);
+
+    function getUserNFTCountForCollection(address _user, address _collection) external view returns (uint256);
 }
 
 /**
@@ -67,33 +65,6 @@ contract VaultReader {
     constructor(address _vaultAddress) {
         require(_vaultAddress != address(0), "VR.1");
         vault = IVault(_vaultAddress);
-    }
-
-    /**
-     * @dev Returns the user information including locked NFTs.
-     * @param _user Address of the user.
-     * @return amount The amount of tokens locked.
-     * @return lockStart The timestamp when the lock started.
-     * @return lockEnd The timestamp when the lock ends.
-     * @return peakVotingPower The peak voting power of the user.
-     * @return epochsToClaim The epochs the user can claim rewards from.
-     * @return lockedNFTs The array of locked NFTs.
-     */
-    function getUserInfo(
-        address _user
-    )
-        external
-        view
-        returns (
-            uint256 amount,
-            uint256 lockStart,
-            uint256 lockEnd,
-            uint256 peakVotingPower,
-            uint256[] memory epochsToClaim,
-            IVault.NFTLock[] memory lockedNFTs
-        )
-    {
-        return vault.getUserInfo(_user);
     }
 
     /**
@@ -114,45 +85,6 @@ contract VaultReader {
     function getUserNFTCount(address _user) external view returns (uint256) {
         (,,,, , IVault.NFTLock[] memory lockedNFTs) = vault.getUserInfo(_user);
         return lockedNFTs.length;
-    }
-
-    /**
-     * @dev Returns the number of epochs.
-     * @return The total number of epochs.
-     */
-    function getEpochCount() external view returns (uint256) {
-        return vault.getEpochCount();
-    }
-
-    /**
-     * @dev Returns details of a specific epoch including leaderboard info.
-     * @param _epochId Epoch ID.
-     * @return startTime The start time of the epoch.
-     * @return endTime The end time of the epoch.
-     * @return totalVotingPower The total voting power in the epoch.
-     * @return rewardTokens The reward tokens for the epoch.
-     * @return rewardAmounts The reward amounts for the epoch.
-     * @return leaderboardBonusAmounts The leaderboard bonus amounts.
-     * @return leaderboardPercentage The leaderboard percentage.
-     * @return leaderboardClaimed Whether the leaderboard bonus has been claimed.
-     */
-    function getEpochInfo(
-        uint256 _epochId
-    )
-        external
-        view
-        returns (
-            uint256 startTime,
-            uint256 endTime,
-            uint256 totalVotingPower,
-            address[] memory rewardTokens,
-            uint256[] memory rewardAmounts,
-            uint256[] memory leaderboardBonusAmounts,
-            uint256 leaderboardPercentage,
-            bool leaderboardClaimed
-        )
-    {
-        return vault.getEpochInfo(_epochId);
     }
 
     /**
@@ -193,27 +125,6 @@ contract VaultReader {
     }
 
     /**
-     * @dev Gets current vault leaderboard info (cumulative across epochs).
-     * @param _user Address of the user to check ranking for.
-     * @return topHolder Address of current vault top holder.
-     * @return topHolderCumulativePower Current top holder's cumulative voting power.
-     * @return userRank User's current rank (1 = top, 0 = not participating).
-     * @return userCumulativePower User's cumulative voting power across all epochs.
-     */
-    function getVaultLeaderboard(address _user) 
-        external 
-        view 
-        returns (
-            address topHolder,
-            uint256 topHolderCumulativePower,
-            uint256 userRank,
-            uint256 userCumulativePower
-        )
-    {
-        return vault.getVaultLeaderboard(_user);
-    }
-
-    /**
      * @dev Gets a user's cumulative voting power across all epochs.
      * @param _user Address of the user.
      * @return cumulativePower User's total cumulative voting power.
@@ -230,5 +141,30 @@ contract VaultReader {
      */
     function hasUserContributedToEpoch(address _user, uint256 _epochId) external view returns (bool) {
         return vault.userEpochContributed(_user, _epochId);
+    }
+
+    /**
+     * @dev Checks if a user qualifies for NFT perks from a specific collection.
+     * @param _user Address of the user.
+     * @param _collection Address of the NFT collection.
+     * @return qualifies Whether the user qualifies for the perk.
+     * @return boostPercentage The boost percentage they get.
+     */
+    function doesUserQualifyForNFTPerk(address _user, address _collection) 
+        external 
+        view 
+        returns (bool qualifies, uint256 boostPercentage) 
+    {
+        IVault.NFTCollectionRequirement memory requirement = vault.nftCollectionRequirements(_collection);
+        
+        if (!requirement.isActive) {
+            return (false, 0);
+        }
+        
+        uint256 userNFTCount = vault.getUserNFTCountForCollection(_user, _collection);
+        qualifies = userNFTCount >= requirement.requiredCount;
+        boostPercentage = qualifies ? requirement.boostPercentage : 0;
+        
+        return (qualifies, boostPercentage);
     }
 }

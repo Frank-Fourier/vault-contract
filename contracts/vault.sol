@@ -45,7 +45,6 @@ interface IVaultFactory {
     function calculatePerformanceFee(address vaultAddress, uint256 rewardAmount) external view returns (uint256);
     function calculateDepositFeeSharing(address vaultAddress, uint256 feeAmount) external view returns (uint256 platformShare, uint256 adminShare);
     function upgradeVaultTier(address vaultAddress, VaultTier newTier) external payable;
-    function getVaultTier(address vaultAddress) external view returns (VaultTier);
 }
 
 /**
@@ -149,11 +148,11 @@ contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
     /// @notice Mapping to store user locks based on their address
     mapping(address => UserLock) private userLocks;
 
+    /// @notice Array to store all epochs
+    Epoch[] private epochs;
+
     /// @notice Mapping to store user's voting power in each epoch
     mapping(address => mapping(uint256 => uint256)) public userEpochVotingPower;
-
-    /// @notice Array to store all epochs
-    Epoch[] public epochs;
 
     /// @notice Event emitted when tokens are deposited into the vault.
     /// @param user The address of the user who deposited the tokens.
@@ -1123,24 +1122,6 @@ contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
     }
 
     /**
-     * @dev Returns the locked NFTs for a user.
-     * @param _user Address of the user.
-     * @return The array of locked NFTs for the user.
-     */
-    function getUserNFTs(address _user) external view returns (NFTLock[] memory) {
-        return userLocks[_user].lockedNFTs;
-    }
-
-    /**
-     * @dev Returns the count of locked NFTs for a user.
-     * @param _user Address of the user.
-     * @return The count of locked NFTs for the user.
-     */
-    function getUserNFTCount(address _user) external view returns (uint256) {
-        return userLocks[_user].lockedNFTs.length;
-    }
-
-    /**
      * @dev Checks if a specific NFT is locked by a user.
      * @param _user Address of the user.
      * @param _collection Address of the NFT collection.
@@ -1211,47 +1192,6 @@ contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
     }
 
     /**
-     * @dev Gets the total reward amounts (regular + leaderboard) for an epoch.
-     * @param _epochId Epoch ID.
-     * @return rewardTokens Array of reward token addresses.
-     * @return totalAmounts Array of total amounts.
-     */
-    function getTotalEpochRewards(uint256 _epochId) 
-        external 
-        view 
-        returns (address[] memory rewardTokens, uint256[] memory totalAmounts) 
-    {
-        require(_epochId < epochs.length, "V.39");
-        Epoch memory epoch = epochs[_epochId];
-        
-        rewardTokens = epoch.rewardTokens;
-        totalAmounts = new uint256[](rewardTokens.length);
-        
-        for (uint256 i = 0; i < rewardTokens.length; i++) {
-            totalAmounts[i] = epoch.rewardAmounts[i] + epoch.leaderboardBonusAmounts[i];
-        }
-        
-        return (rewardTokens, totalAmounts);
-    }
-
-    /**
-     * @dev Gets the leaderboard bonus amounts for an epoch.
-     * @param _epochId Epoch ID.
-     * @return rewardTokens Array of reward token addresses.
-     * @return bonusAmounts Array of bonus amounts.
-     */
-    function getLeaderboardBonusAmounts(uint256 _epochId) 
-        external 
-        view 
-        returns (address[] memory rewardTokens, uint256[] memory bonusAmounts) 
-    {
-        require(_epochId < epochs.length, "V.39");
-        Epoch memory epoch = epochs[_epochId];
-        
-        return (epoch.rewardTokens, epoch.leaderboardBonusAmounts);
-    }
-
-    /**
      * @dev Gets current vault leaderboard info (cumulative across epochs).
      * @param _user Address of the user to check ranking for.
      * @return topHolder Address of current vault top holder.
@@ -1287,25 +1227,6 @@ contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
             rank,
             userPower
         );
-    }
-
-    /**
-     * @dev Gets a user's cumulative voting power across all epochs.
-     * @param _user Address of the user.
-     * @return cumulativePower User's total cumulative voting power.
-     */
-    function getUserCumulativeVotingPower(address _user) external view returns (uint256) {
-        return userCumulativeVotingPower[_user];
-    }
-
-    /**
-     * @dev Checks if a user has contributed to a specific epoch (for cumulative tracking).
-     * @param _user Address of the user.
-     * @param _epochId Epoch ID to check.
-     * @return contributed Whether the user has contributed to this epoch.
-     */
-    function hasUserContributedToEpoch(address _user, uint256 _epochId) external view returns (bool) {
-        return userEpochContributed[_user][_epochId];
     }
 
     /**
@@ -1378,39 +1299,6 @@ contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
         }
         
         return count;
-    }
-
-    /**
-     * @dev Checks if a user qualifies for NFT perks from a specific collection.
-     * @param _user Address of the user.
-     * @param _collection Address of the NFT collection.
-     * @return qualifies Whether the user qualifies for the perk.
-     * @return boostPercentage The boost percentage they get.
-     */
-    function doesUserQualifyForNFTPerk(address _user, address _collection) 
-        external 
-        view 
-        returns (bool qualifies, uint256 boostPercentage) 
-    {
-        NFTCollectionRequirement memory requirement = nftCollectionRequirements[_collection];
-        
-        if (!requirement.isActive) {
-            return (false, 0);
-        }
-        
-        uint256 userNFTCount = getUserNFTCountForCollection(_user, _collection);
-        qualifies = userNFTCount >= requirement.requiredCount;
-        boostPercentage = qualifies ? requirement.boostPercentage : 0;
-        
-        return (qualifies, boostPercentage);
-    }
-
-    /**
-     * @dev Gets the current tier of this vault.
-     * @return The current tier of the vault.
-     */
-    function getVaultTier() external view returns (IVaultFactory.VaultTier) {
-        return vaultTier;
     }
 
     /*
