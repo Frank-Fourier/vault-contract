@@ -1,58 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-interface IVault {
-    struct NFTLock {
-        address collection;
-        uint256 tokenId;
-    }
-
-    struct NFTCollectionRequirement {
-        bool isActive;
-        uint256 requiredCount;
-        uint256 boostPercentage;
-    }
-
-    enum VaultTier {
-        NO_RISK_NO_CROWN,
-        SPLIT_THE_SPOILS,
-        VAULTMASTER_3000
-    }
-
-    function getUserInfo(address _user)
-        external
-        view
-        returns (
-            uint256 amount,
-            uint256 lockStart,
-            uint256 lockEnd,
-            uint256 peakVotingPower,
-            uint256[] memory epochsToClaim,
-            NFTLock[] memory lockedNFTs
-        );
-
-    function getEpochInfo(uint256 _epochId)
-        external
-        view
-        returns (
-            uint256 startTime,
-            uint256 endTime,
-            uint256 totalVotingPower,
-            address[] memory rewardTokens,
-            uint256[] memory rewardAmounts,
-            uint256[] memory leaderboardBonusAmounts,
-            uint256 leaderboardPercentage,
-            bool leaderboardClaimed
-        );
-
-    function userCumulativeVotingPower(address _user) external view returns (uint256);
-
-    function userEpochContributed(address _user, uint256 _epochId) external view returns (bool);
-
-    function nftCollectionRequirements(address) external view returns (NFTCollectionRequirement memory);
-
-    function getUserNFTCountForCollection(address _user, address _collection) external view returns (uint256);
-}
+import "./interfaces/IVault.sol";
 
 /**
  * @title VaultReader
@@ -144,6 +93,46 @@ contract VaultReader {
     }
 
     /**
+     * @dev Gets current vault leaderboard info (cumulative across epochs).
+     * @param _user Address of the user to check ranking for.
+     * @return topHolder Address of current vault top holder.
+     * @return topHolderCumulativePower Current top holder's cumulative voting power.
+     * @return userRank User's current rank (1 = top, 0 = not participating).
+     * @return userCumulativePower User's cumulative voting power across all epochs.
+     */
+    function getVaultLeaderboard(address _user)
+        external
+        view
+        returns (
+            address topHolder,
+            uint256 topHolderCumulativePower,
+            uint256 userRank,
+            uint256 userCumulativePower
+        )
+    {
+        topHolder = vault.vaultTopHolder();
+        topHolderCumulativePower = vault.vaultTopHolderCumulativePower();
+        userCumulativePower = vault.userCumulativeVotingPower(_user);
+
+        // Calculate user rank (simplified - just check if user is top holder)
+        uint256 rank = 0;
+        if (userCumulativePower > 0) {
+            if (_user == topHolder) {
+                rank = 1;
+            } else {
+                rank = 2; // For simplicity, everyone else is rank 2+
+            }
+        }
+
+        return (
+            topHolder,
+            topHolderCumulativePower,
+            rank,
+            userCumulativePower
+        );
+    }
+
+    /**
      * @dev Checks if a user qualifies for NFT perks from a specific collection.
      * @param _user Address of the user.
      * @param _collection Address of the NFT collection.
@@ -161,10 +150,21 @@ contract VaultReader {
             return (false, 0);
         }
         
-        uint256 userNFTCount = vault.getUserNFTCountForCollection(_user, _collection);
+        uint256 userNFTCount = getUserNFTCountForCollection(_user, _collection);
         qualifies = userNFTCount >= requirement.requiredCount;
         boostPercentage = qualifies ? requirement.boostPercentage : 0;
         
         return (qualifies, boostPercentage);
+    }
+
+    /**
+     * @dev Gets the count of NFTs for a specific collection that a user has locked.
+     *      This is the efficient implementation that reads directly from the Vault's public mapping.
+     * @param _user Address of the user.
+     * @param _collection Address of the NFT collection.
+     * @return count Number of NFTs from the collection.
+     */
+    function getUserNFTCountForCollection(address _user, address _collection) public view returns (uint256) {
+        return vault.userNFTCounts(_user, _collection);
     }
 }

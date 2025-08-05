@@ -3,36 +3,35 @@ pragma solidity 0.8.28;
 
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "./Vault.sol";
+import "./interfaces/IVaultFactory.sol";
+import "./interfaces/IVault.sol";
+import "./interfaces/IVaultDeployer.sol";
 
 /**
  * @title VaultFactory
  * @dev A factory contract for creating and managing `Vault` instances with tier-based fee structures.
  */
 contract VaultFactory is Ownable, ReentrancyGuard {
-    /// @notice Struct defining tier parameters
-    struct TierConfig {
-        uint256 deploymentFee;           // Deployment fee in wei
-        uint256 performanceFeeRate;      // Performance fee in basis points
-        uint256 minDepositFeeRate;       // Minimum deposit fee in basis points
-        uint256 maxDepositFeeRate;       // Maximum deposit fee in basis points
-        uint256 platformDepositShare;    // Platform share of deposit fees in basis points (10000 = 100%)
-        bool    canAdjustDepositFee;     // Whether admin can adjust deposit fee
-        string  tierName;                // Human readable tier name
-    }
+    // Enums and Structs are now inherited from the interface and removed from here.
 
     /// @notice Mapping of approved partners
     mapping(address => bool) public approvedPartners; // at some point we can disable the whitelist so that anyone can create a vault
+    /// @notice Whitelist for partners is active or not
+    bool public partnerWhitelistActive;
     /// @notice Address of the main Vault
     address public mainVaultAddress;
     /// @notice Address of the main fee beneficiary
     address public mainFeeBeneficiary;
     /// @notice List of all deployed Vaults
-    Vault[] public deployedVaults;
+    address[] public deployedVaults;
+    /// @notice Address of the VaultDeployer contract
+    IVaultDeployer public vaultDeployer;
+    /// @notice Address of the master Vault implementation contract
+    address public vaultImplementation;
     /// @notice Mapping from vault address to its tier
     mapping(address => IVaultFactory.VaultTier) public vaultTiers;
     /// @notice Tier configurations mapping
-    mapping(IVaultFactory.VaultTier => TierConfig) public tierConfigs;
+    mapping(IVaultFactory.VaultTier => IVaultFactory.TierConfig) public tierConfigs;
     /// @notice Total deployment fees collected
     uint256 public totalDeploymentFeesCollected;
 
@@ -47,6 +46,18 @@ contract VaultFactory is Ownable, ReentrancyGuard {
         IVaultFactory.VaultTier tier,
         uint256 deploymentFeePaid
     );
+
+    /// @notice Event emitted when the vault implementation address is updated
+    /// @param implementation The address of the new implementation
+    event VaultImplementationUpdated(address indexed implementation);
+
+    /// @notice Event emitted when the vault deployer address is updated
+    /// @param deployer The address of the new deployer
+    event VaultDeployerUpdated(address indexed deployer);
+
+    /// @notice Event emitted when partner whitelist status is changed
+    /// @param active Whether the whitelist is active
+    event PartnerWhitelistStatusChanged(bool active);
     /// @notice Event emitted when a partner is approved or removed
     /// @param partner The address of the partner
     /// @param approved Whether the partner is approved
@@ -105,6 +116,7 @@ contract VaultFactory is Ownable, ReentrancyGuard {
         mainVaultAddress = _mainVaultAddress;
         mainFeeBeneficiary = _mainFeeBeneficiary;
         approvedPartners[_owner] = true;
+        partnerWhitelistActive = true;
 
         // Initialize tier configurations
         _initializeTierConfigs();
@@ -130,12 +142,16 @@ contract VaultFactory is Ownable, ReentrancyGuard {
         address _feeBeneficiary,
         IVaultFactory.VaultTier _tier
     ) external payable nonReentrant returns (address) {
-        require(approvedPartners[msg.sender], "V.F.1");
+        if (partnerWhitelistActive) {
+            require(approvedPartners[msg.sender], "V.F.1");
+        }
         require(_vaultToken != address(0), "V.F.5");
         require(_vaultAdmin != address(0), "V.F.6");
         require(_feeBeneficiary != address(0), "V.F.7");
+        require(address(vaultDeployer) != address(0), "V.F.25");
+        require(vaultImplementation != address(0), "V.F.26");
 
-        TierConfig memory tierConfig = tierConfigs[_tier];
+        IVaultFactory.TierConfig memory tierConfig = tierConfigs[_tier];
         
         // Check deployment fee
         require(msg.value >= tierConfig.deploymentFee, "V.F.8");
@@ -147,8 +163,9 @@ contract VaultFactory is Ownable, ReentrancyGuard {
             "V.F.9"
         );
 
-        // Create vault with tier information
-        Vault newVault = new Vault(
+        // Prepare initialization call for the Vault's initialize function
+        bytes memory initializeData = abi.encodeWithSelector(
+            IVault.initialize.selector,
             _vaultToken,
             _depositFeeRate,
             _vaultAdmin,
@@ -157,8 +174,14 @@ contract VaultFactory is Ownable, ReentrancyGuard {
             _tier
         );
 
-        deployedVaults.push(newVault);
-        vaultTiers[address(newVault)] = _tier;
+        // Create vault clone via the deployer
+        address newVaultAddress = vaultDeployer.deployVault(
+            vaultImplementation,
+            initializeData
+        );
+
+        deployedVaults.push(newVaultAddress);
+        vaultTiers[newVaultAddress] = _tier;
         
         // Track deployment fees
         totalDeploymentFeesCollected += tierConfig.deploymentFee;
@@ -168,8 +191,8 @@ contract VaultFactory is Ownable, ReentrancyGuard {
             payable(msg.sender).transfer(msg.value - tierConfig.deploymentFee);
         }
 
-        emit VaultCreated(msg.sender, address(newVault), _tier, tierConfig.deploymentFee);
-        return address(newVault);
+        emit VaultCreated(msg.sender, newVaultAddress, _tier, tierConfig.deploymentFee);
+        return newVaultAddress;
     }
 
     /**
@@ -181,15 +204,15 @@ contract VaultFactory is Ownable, ReentrancyGuard {
         // Verify vault exists and caller is the vault admin
         require(vaultTiers[_vaultAddress] != IVaultFactory.VaultTier(0) || _vaultAddress != address(0), "V.F.10");
         
-        Vault vault = Vault(_vaultAddress);
+        IVault vault = IVault(_vaultAddress);
         require(msg.sender == vault.owner(), "V.F.11");
         
         IVaultFactory.VaultTier currentTier = vaultTiers[_vaultAddress];
         require(_newTier > currentTier, "V.F.12");
         
         // Calculate upgrade cost
-        TierConfig memory currentConfig = tierConfigs[currentTier];
-        TierConfig memory newConfig = tierConfigs[_newTier];
+        IVaultFactory.TierConfig memory currentConfig = tierConfigs[currentTier];
+        IVaultFactory.TierConfig memory newConfig = tierConfigs[_newTier];
         uint256 upgradeCost = newConfig.deploymentFee - currentConfig.deploymentFee;
         
         require(msg.value >= upgradeCost, "V.F.13");
@@ -223,7 +246,7 @@ contract VaultFactory is Ownable, ReentrancyGuard {
     function getVaultTierConfig(address _vaultAddress) 
         external 
         view 
-        returns (TierConfig memory) 
+        returns (IVaultFactory.TierConfig memory) 
     {
         return tierConfigs[vaultTiers[_vaultAddress]];
     }
@@ -239,7 +262,7 @@ contract VaultFactory is Ownable, ReentrancyGuard {
         view 
         returns (uint256) 
     {
-        TierConfig memory config = tierConfigs[vaultTiers[_vaultAddress]];
+        IVaultFactory.TierConfig memory config = tierConfigs[vaultTiers[_vaultAddress]];
         return (_rewardAmount * config.performanceFeeRate) / 10000;
     }
 
@@ -255,7 +278,7 @@ contract VaultFactory is Ownable, ReentrancyGuard {
         view 
         returns (uint256 platformShare, uint256 adminShare) 
     {
-        TierConfig memory config = tierConfigs[vaultTiers[_vaultAddress]];
+        IVaultFactory.TierConfig memory config = tierConfigs[vaultTiers[_vaultAddress]];
         platformShare = (_feeAmount * config.platformDepositShare) / 10000;
         adminShare = _feeAmount - platformShare;
     }
@@ -287,8 +310,8 @@ contract VaultFactory is Ownable, ReentrancyGuard {
         IVaultFactory.VaultTier currentTier = vaultTiers[_vaultAddress];
         require(_newTier > currentTier, "V.F.12");
         
-        TierConfig memory currentConfig = tierConfigs[currentTier];
-        TierConfig memory newConfig = tierConfigs[_newTier];
+        IVaultFactory.TierConfig memory currentConfig = tierConfigs[currentTier];
+        IVaultFactory.TierConfig memory newConfig = tierConfigs[_newTier];
         
         return newConfig.deploymentFee - currentConfig.deploymentFee;
     }
@@ -323,7 +346,7 @@ contract VaultFactory is Ownable, ReentrancyGuard {
         require(_minDepositFeeRate <= _maxDepositFeeRate, "V.F.16");
         require(_platformDepositShare <= 10000, "V.F.17");
 
-        tierConfigs[_tier] = TierConfig({
+        tierConfigs[_tier] = IVaultFactory.TierConfig({
             deploymentFee: _deploymentFee,
             performanceFeeRate: _performanceFeeRate,
             minDepositFeeRate: _minDepositFeeRate,
@@ -348,6 +371,15 @@ contract VaultFactory is Ownable, ReentrancyGuard {
     }
 
     /**
+     * @notice Enables or disables the partner whitelist for creating vaults.
+     * @param _active True to enable the whitelist, false to disable.
+     */
+    function setPartnerWhitelistActive(bool _active) external onlyOwner {
+        partnerWhitelistActive = _active;
+        emit PartnerWhitelistStatusChanged(_active);
+    }
+
+    /**
      * @notice Sets the main Vault address.
      * @param _mainVaultAddress Address of the main Vault.
      */
@@ -355,6 +387,26 @@ contract VaultFactory is Ownable, ReentrancyGuard {
         require(_mainVaultAddress != address(0), "V.F.19");
         require(_mainVaultAddress != mainVaultAddress, "V.F.20");
         mainVaultAddress = _mainVaultAddress;
+    }
+
+    /**
+     * @notice Sets the VaultDeployer contract address.
+     * @param _deployer Address of the VaultDeployer contract.
+     */
+    function setVaultDeployer(address _deployer) external onlyOwner {
+        require(_deployer != address(0), "V.F.19");
+        vaultDeployer = IVaultDeployer(_deployer);
+        emit VaultDeployerUpdated(_deployer);
+    }
+
+    /**
+     * @notice Sets the master Vault implementation address.
+     * @param _implementation Address of the master Vault implementation.
+     */
+    function setVaultImplementation(address _implementation) external onlyOwner {
+        require(_implementation != address(0), "V.F.19");
+        vaultImplementation = _implementation;
+        emit VaultImplementationUpdated(_implementation);
     }
 
     /**
@@ -390,7 +442,7 @@ contract VaultFactory is Ownable, ReentrancyGuard {
      */
     function _initializeTierConfigs() internal {
         // Model 1: "No Risk No Crown"
-        tierConfigs[IVaultFactory.VaultTier.NO_RISK_NO_CROWN] = TierConfig({
+        tierConfigs[IVaultFactory.VaultTier.NO_RISK_NO_CROWN] = IVaultFactory.TierConfig({
             deploymentFee: 0,
             performanceFeeRate: 1000,        // 10%
             minDepositFeeRate: 500,          // 5%
@@ -401,7 +453,7 @@ contract VaultFactory is Ownable, ReentrancyGuard {
         });
 
         // Model 2: "Split the Spoils"
-        tierConfigs[IVaultFactory.VaultTier.SPLIT_THE_SPOILS] = TierConfig({
+        tierConfigs[IVaultFactory.VaultTier.SPLIT_THE_SPOILS] = IVaultFactory.TierConfig({
             deploymentFee: 0.1 ether,
             performanceFeeRate: 500,         // 5%
             minDepositFeeRate: 100,          // 1%
@@ -412,7 +464,7 @@ contract VaultFactory is Ownable, ReentrancyGuard {
         });
 
         // Model 3: "Vaultmaster 3000"
-        tierConfigs[IVaultFactory.VaultTier.VAULTMASTER_3000] = TierConfig({
+        tierConfigs[IVaultFactory.VaultTier.VAULTMASTER_3000] = IVaultFactory.TierConfig({
             deploymentFee: 2 ether,
             performanceFeeRate: 150,         // 1.5%
             minDepositFeeRate: 0,            // 0%
@@ -449,5 +501,7 @@ contract VaultFactory is Ownable, ReentrancyGuard {
      * V.F.22: VaultFactory: same fee beneficiary
      * V.F.23: VaultFactory: invalid recipient
      * V.F.24: VaultFactory: no fees to withdraw
+     * V.F.25: VaultFactory: deployer not set
+     * V.F.26: VaultFactory: implementation not set
      */
 }

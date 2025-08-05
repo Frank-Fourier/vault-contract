@@ -1,60 +1,23 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 
-interface IERC20 {
-    function transfer(address to, uint256 amount) external returns (bool);
-
-    function transferFrom(
-        address from,
-        address to,
-        uint256 amount
-    ) external returns (bool);
-
-    function balanceOf(address account) external view returns (uint256);
-
-    function allowance(
-        address owner,
-        address spender
-    ) external view returns (uint256);
-}
-
-interface IVaultFactory {
-    enum VaultTier {
-        NO_RISK_NO_CROWN,    // 0: Free deployment, 10% performance, 5% deposit
-        SPLIT_THE_SPOILS,    // 1: 0.1 ETH deployment, 5% performance, 1-10% deposit (50% shared)
-        VAULTMASTER_3000     // 2: 2 ETH deployment, 1.5% performance, 0-10% deposit (admin keeps 100%)
-    }
-
-    struct TierConfig {
-        uint256 deploymentFee;           // Deployment fee in wei
-        uint256 performanceFeeRate;      // Performance fee in basis points
-        uint256 minDepositFeeRate;       // Minimum deposit fee in basis points
-        uint256 maxDepositFeeRate;       // Maximum deposit fee in basis points
-        uint256 platformDepositShare;    // Platform share of deposit fees in basis points (10000 = 100%)
-        bool    canAdjustDepositFee;     // Whether admin can adjust deposit fee
-        string  tierName;                // Human readable tier name
-    }
-
-    function mainFeeBeneficiary() external view returns (address);
-    function getVaultTierConfig(address vaultAddress) external view returns (TierConfig memory);
-    function calculatePerformanceFee(address vaultAddress, uint256 rewardAmount) external view returns (uint256);
-    function calculateDepositFeeSharing(address vaultAddress, uint256 feeAmount) external view returns (uint256 platformShare, uint256 adminShare);
-    function upgradeVaultTier(address vaultAddress, VaultTier newTier) external payable;
-}
+import "./interfaces/IVaultFactory.sol";
+import "./interfaces/IERC20.sol";
 
 /**
  * @title Vault
  * @dev A contract that locks user tokens for a specified duration and provides linear decaying voting power.
  *      Users can participate in epochs to earn rewards distributed proportionally to their voting power.
  */
-contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
-    IERC20 public immutable token;
-    IVaultFactory public immutable factory;
+contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, OwnableUpgradeable {
+    IERC20 public token;
+    IVaultFactory public factory;
 
     /// @notice Fee beneficiary address
     address public feeBeneficiaryAddress;
@@ -109,6 +72,9 @@ contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
 
     /// @notice Mapping to store NFT collection requirements and boosts
     mapping(address => NFTCollectionRequirement) public nftCollectionRequirements;
+
+    /// @notice Mapping to track NFT counts per user per collection for efficient boost calculation.
+    mapping(address => mapping(address => uint256)) public userNFTCounts;
 
     /// @dev Struct for NFT lock information
     struct NFTLock {
@@ -228,10 +194,10 @@ contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
     /// @param amount The amount of tokens withdrawn.
     event EmergencyTokenWithdraw(address indexed token, uint256 amount);
 
-    /// @notice Event emitted when emergency withdrawal of locked tokens occurs.
-    /// @param user The address of the user withdrawing their locked tokens.
-    /// @param amount The amount of locked tokens withdrawn.
-    event EmergencyPrincipalWithdraw(address indexed user, uint256 amount);
+    /// @notice Event emitted when emergency withdrawal of principal and NFTs for a user occurs.
+    /// @param user The address of the user withdrawing their assets.
+    /// @param amount The amount of principal tokens withdrawn.
+    event EmergencyWithdrawForUser(address indexed user, uint256 amount);
 
     /// @notice Event emitted when additional rewards are added to an epoch.
     /// @param epochId The ID of the epoch rewards were added to.
@@ -254,12 +220,6 @@ contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
     /// @param collection The address of the NFT collection.
     /// @param tokenId The token ID of the withdrawn NFT.
     event NFTWithdrawn(address indexed user, address indexed collection, uint256 indexed tokenId);
-
-    /// @notice Event emitted when emergency withdrawal of NFTs occurs.
-    /// @param user The address of the user withdrawing their locked NFTs.
-    /// @param collection The address of the NFT collection.
-    /// @param tokenId The token ID of the emergency withdrawn NFT.
-    event EmergencyNFTWithdraw(address indexed user, address indexed collection, uint256 indexed tokenId);
 
     /// @notice Event emitted when NFT collection requirement is set.
     /// @param collection The address of the NFT collection.
@@ -317,8 +277,13 @@ contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
     }
 
     /*
-     * ==========  CONSTRUCTOR  ==========
+     * ==========  INITIALIZER  ==========
      */
+
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
 
     /**
      * @dev Initializes the vault with necessary parameters.
@@ -329,19 +294,22 @@ contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
      * @param _feeBeneficiary Address for fee distribution.
      * @param _tier The tier of this vault
      */
-    constructor(
+    function initialize(
         address _token,
         uint256 _depositFeeRate,
         address _vaultAdmin,
         address _factory,
         address _feeBeneficiary,
         IVaultFactory.VaultTier _tier
-    ) Ownable(_vaultAdmin) {
+    ) external initializer {
         require(_token != address(0), "V.3");
         require(_vaultAdmin != address(0), "V.4");
         require(_factory != address(0), "V.5");
         require(_feeBeneficiary != address(0), "V.6");
         require(_depositFeeRate <= MAX_FEE_RATE, "V.7");
+
+        __Ownable_init(_vaultAdmin);
+        __ReentrancyGuard_init();
 
         token = IERC20(_token);
         depositFeeRate = _depositFeeRate;
@@ -363,26 +331,37 @@ contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
         uint256 _amount,
         uint256 _duration
     ) external nonReentrant whenNotPaused {
+        UserLock storage lock = userLocks[msg.sender];
+        
+        require(lock.amount == 0, "V.14");
         require(_amount >= MIN_LOCK_AMOUNT, "V.8");
         require(
             _duration >= MIN_LOCK_DURATION && _duration <= MAX_LOCK_DURATION,
             "V.9"
         );
-
-        uint256 fee = (_amount * depositFeeRate) / 10000;
-        uint256 netAmount = _amount - fee;
-
+        // Check allowance before any state changes
         require(
             token.allowance(msg.sender, address(this)) >= _amount,
             "V.10"
         );
+
+        uint256 fee = (_amount * depositFeeRate) / 10000;
+        uint256 netAmount = _amount - fee;
+
+        // All state changes are performed here, before any interactions.
+        lock.amount = netAmount;
+        lock.lockStart = block.timestamp;
+        lock.lockEnd = block.timestamp + _duration;
+        lock.peakVotingPower = netAmount;
+        _updateUserEpochPower(msg.sender);
+
+        // External calls happen last.
         require(
             token.transferFrom(msg.sender, address(this), _amount),
             "V.11"
         );
         
         if (fee > 0) {
-            // Use tier-based fee sharing
             (uint256 platformShare, uint256 adminShare) = factory.calculateDepositFeeSharing(address(this), fee);
             
             if (platformShare > 0) {
@@ -393,15 +372,6 @@ contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
             }
         }
 
-        UserLock storage lock = userLocks[msg.sender];
-        require(lock.amount == 0, "V.14");
-
-        lock.amount = netAmount;
-        lock.lockStart = block.timestamp;
-        lock.lockEnd = block.timestamp + _duration;
-        lock.peakVotingPower = netAmount;
-
-        _updateUserEpochPower(msg.sender);
         emit Deposited(msg.sender, _amount, fee);
     }
 
@@ -420,15 +390,32 @@ contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
             _additionalAmount > 0 || _duration > 0,
             "V.15"
         );
-
+        
         if (_additionalAmount > 0) {
-            uint256 fee = (_additionalAmount * depositFeeRate) / 10000;
-            uint256 netAmount = _additionalAmount - fee;
-
+            // Check allowance before any state changes
             require(
                 token.allowance(msg.sender, address(this)) >= _additionalAmount,
                 "V.10"
             );
+        }
+
+        uint256 netAmount = 0;
+        uint256 fee = 0;
+        if (_additionalAmount > 0) {
+            fee = (_additionalAmount * depositFeeRate) / 10000;
+            netAmount = _additionalAmount - fee;
+        }
+
+        // All state changes happen before interactions.
+        _expandLock(
+            msg.sender,
+            netAmount,
+            _duration == 0 ? 0 : block.timestamp + _duration
+        );
+        _updateUserEpochPower(msg.sender);
+
+        // External calls happen last.
+        if (_additionalAmount > 0) {
             require(
                 token.transferFrom(msg.sender, address(this), _additionalAmount),
                 "V.11"
@@ -445,19 +432,7 @@ contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
                     require(token.transfer(feeBeneficiaryAddress, adminShare), "V.13");
                 }
             }
-
-            _expandLock(
-                msg.sender,
-                netAmount,
-                _duration == 0 ? 0 : block.timestamp + _duration
-            );
-        } else {
-            // purely extend lock time
-            _expandLock(msg.sender, 0, block.timestamp + _duration);
         }
-
-        // Update user's epoch contribution if there's an active epoch
-        _updateUserEpochPower(msg.sender);
     }
 
     /**
@@ -475,6 +450,7 @@ contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
         uint256 nftCount = lock.lockedNFTs.length;
         for (uint256 i = 0; i < nftCount; i++) {
             NFTLock memory nftLock = lock.lockedNFTs[i];
+            userNFTCounts[msg.sender][nftLock.collection]--;
             IERC721(nftLock.collection).safeTransferFrom(address(this), msg.sender, nftLock.tokenId);
             emit NFTWithdrawn(msg.sender, nftLock.collection, nftLock.tokenId);
         }
@@ -542,6 +518,8 @@ contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
                 // Transfer NFT back to user
                 IERC721(_collection).safeTransferFrom(address(this), msg.sender, _tokenId);
                 
+                userNFTCounts[msg.sender][_collection]--;
+
                 // Remove NFT from array by swapping with last element and popping
                 lock.lockedNFTs[i] = lock.lockedNFTs[nftCount - 1];
                 lock.lockedNFTs.pop();
@@ -567,6 +545,7 @@ contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
         uint256 nftCount = lock.lockedNFTs.length;
         for (uint256 i = 0; i < nftCount; i++) {
             NFTLock memory nftLock = lock.lockedNFTs[i];
+            userNFTCounts[msg.sender][nftLock.collection]--;
             IERC721(nftLock.collection).safeTransferFrom(address(this), msg.sender, nftLock.tokenId);
             emit NFTWithdrawn(msg.sender, nftLock.collection, nftLock.tokenId);
         }
@@ -621,6 +600,8 @@ contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
                 tokenId: tokenId
             }));
             
+            userNFTCounts[msg.sender][_collection]++;
+
             emit NFTDeposited(msg.sender, _collection, tokenId);
         }
         
@@ -983,17 +964,19 @@ contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
             userPower != 0 && totalPower != 0,
             "V.43"
         );
-        uint256 rewardLength = epoch.rewardTokens.length;
+        
+        // Remove the epochID from the list of epochs to claim BEFORE transfers.
+        userLock.epochsToClaim[i] = userLock.epochsToClaim[
+            epochsToClaimLength - 1
+        ];
+        userLock.epochsToClaim.pop();
 
-        // Transfer the user's share of each reward token
+        uint256 rewardLength = epoch.rewardTokens.length;
         for (uint256 j = 0; j < rewardLength; j++) {
             IERC20 rewardToken = IERC20(epoch.rewardTokens[j]);
             uint256 totalReward = epoch.rewardAmounts[j];
-            // user share
-            // make sure there are no rounding errors leading to error here
             uint256 userShare = (totalReward * userPower) / totalPower;
             if (userShare > 0) {
-                // here make sure also that the math will not leave error of accuracy
                 require(
                     rewardToken.balanceOf(address(this)) >= userShare,
                     "V.44"
@@ -1001,11 +984,6 @@ contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
                 rewardToken.transfer(msg.sender, userShare);
             }
         }
-        // Remove the epochID from the list of epochs to claim
-        userLock.epochsToClaim[i] = userLock.epochsToClaim[
-            epochsToClaimLength - 1
-        ];
-        userLock.epochsToClaim.pop();
 
         emit RewardsClaimed(msg.sender, _epochId);
     }
@@ -1192,44 +1170,6 @@ contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
     }
 
     /**
-     * @dev Gets current vault leaderboard info (cumulative across epochs).
-     * @param _user Address of the user to check ranking for.
-     * @return topHolder Address of current vault top holder.
-     * @return topHolderCumulativePower Current top holder's cumulative voting power.
-     * @return userRank User's current rank (1 = top, 0 = not participating).
-     * @return userCumulativePower User's cumulative voting power across all epochs.
-     */
-    function getVaultLeaderboard(address _user) 
-        external 
-        view 
-        returns (
-            address topHolder,
-            uint256 topHolderCumulativePower,
-            uint256 userRank,
-            uint256 userCumulativePower
-        ) 
-    {
-        uint256 userPower = userCumulativeVotingPower[_user];
-        
-        // Calculate user rank (simplified - just check if user is top holder)
-        uint256 rank = 0;
-        if (userPower > 0) {
-            if (_user == vaultTopHolder) {
-                rank = 1;
-            } else {
-                rank = 2; // For simplicity, everyone else is rank 2+
-            }
-        }
-        
-        return (
-            vaultTopHolder,
-            vaultTopHolderCumulativePower,
-            rank,
-            userPower
-        );
-    }
-
-    /**
      * @notice Calculates the total NFT boost for a user based on their locked NFTs and collection requirements.
      * @param _user The address of the user.
      * @return totalBoost The total boost percentage in basis points.
@@ -1242,14 +1182,14 @@ contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
             return 0;
         }
         
-        // Track which collections we've already processed
+        // Use an array to track collections we have already calculated boosts for.
         address[] memory processedCollections = new address[](nftCount);
         uint256 processedCount = 0;
         
+        // Iterate through all locked NFTs to find the unique collections.
         for (uint256 i = 0; i < nftCount; i++) {
             address collection = lock.lockedNFTs[i].collection;
             
-            // Check if we've already processed this collection
             bool alreadyProcessed = false;
             for (uint256 j = 0; j < processedCount; j++) {
                 if (processedCollections[j] == collection) {
@@ -1259,46 +1199,21 @@ contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
             }
             
             if (!alreadyProcessed) {
-                // Count NFTs for this collection
-                uint256 collectionCount = 0;
-                for (uint256 k = 0; k < nftCount; k++) {
-                    if (lock.lockedNFTs[k].collection == collection) {
-                        collectionCount++;
-                    }
-                }
+                // For each unique collection, read its count directly from storage.
+                uint256 collectionCount = userNFTCounts[_user][collection];
                 
-                // Check if this collection meets the requirement
                 NFTCollectionRequirement memory requirement = nftCollectionRequirements[collection];
                 if (requirement.isActive && collectionCount >= requirement.requiredCount) {
                     totalBoost += requirement.boostPercentage;
                 }
                 
-                // Mark this collection as processed
+                // Mark this collection as processed for this function call.
                 processedCollections[processedCount] = collection;
                 processedCount++;
             }
         }
         
         return totalBoost;
-    }
-
-    /**
-     * @dev Gets the count of NFTs for a specific collection that a user has locked.
-     * @param _user Address of the user.
-     * @param _collection Address of the NFT collection.
-     * @return count Number of NFTs from the collection.
-     */
-    function getUserNFTCountForCollection(address _user, address _collection) public view returns (uint256 count) {
-        UserLock storage lock = userLocks[_user];
-        uint256 nftCount = lock.lockedNFTs.length;
-        
-        for (uint256 i = 0; i < nftCount; i++) {
-            if (lock.lockedNFTs[i].collection == _collection) {
-                count++;
-            }
-        }
-        
-        return count;
     }
 
     /*
@@ -1399,41 +1314,42 @@ contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
     }
 
     /**
-     * @dev Emergency withdrawal of locked principal by users
+     * @dev Emergency withdrawal of a user's entire position (principal and NFTs).
+     *      This can only be called by the user themselves after the owner has enabled it.
      */
-    function emergencyPrincipalWithdraw() external nonReentrant whenPaused {
+    function emergencyWithdrawForUser() external nonReentrant whenPaused {
         require(
             emergencyWithdrawEnabled,
             "V.54"
         );
         UserLock storage lock = userLocks[msg.sender];
-        require(lock.amount > 0, "V.16");
+        require(lock.amount > 0 || lock.lockedNFTs.length > 0, "V.16");
 
-        require(
-            token.transfer(msg.sender, lock.amount),
-            "V.11"
-        );
-        emit EmergencyPrincipalWithdraw(msg.sender, lock.amount);
-    }
-
-    /**
-     * @dev Emergency withdrawal of locked NFTs by users
-     */
-    function emergencyNFTWithdraw() external nonReentrant whenPaused {
-        require(emergencyWithdrawEnabled, "V.54");
-        UserLock storage lock = userLocks[msg.sender];
-        require(lock.lockedNFTs.length > 0, "V.58");
-
-        // Transfer all locked NFTs back to user
-        uint256 nftCount = lock.lockedNFTs.length;
-        for (uint256 i = 0; i < nftCount; i++) {
-            NFTLock memory nftLock = lock.lockedNFTs[i];
-            IERC721(nftLock.collection).safeTransferFrom(address(this), msg.sender, nftLock.tokenId);
-            emit EmergencyNFTWithdraw(msg.sender, nftLock.collection, nftLock.tokenId);
+        // 1. Withdraw Principal
+        if (lock.amount > 0) {
+             require(
+                token.transfer(msg.sender, lock.amount),
+                "V.11"
+            );
         }
-        
-        // Clear the NFT array
-        delete lock.lockedNFTs;
+
+        // 2. Withdraw all locked NFTs
+        uint256 nftCount = lock.lockedNFTs.length;
+        if (nftCount > 0) {
+            for (uint256 i = 0; i < nftCount; i++) {
+                NFTLock memory nftLock = lock.lockedNFTs[i];
+                userNFTCounts[msg.sender][nftLock.collection]--;
+                IERC721(nftLock.collection).safeTransferFrom(address(this), msg.sender, nftLock.tokenId);
+            }
+            // Clear the NFT array
+            delete lock.lockedNFTs;
+        }
+
+        emit EmergencyWithdrawForUser(msg.sender, lock.amount);
+
+        // 3. Optional: Reset user's lock state if you want to prevent re-entry issues.
+        // This is good practice to prevent the user from having a "zombie" lock state.
+        delete userLocks[msg.sender];
     }
 
     /**
@@ -1459,16 +1375,6 @@ contract Vault is ReentrancyGuard, IERC721Receiver, Ownable {
         });
         
         emit NFTCollectionRequirementSet(_collection, _isActive, _requiredCount, _boostPercentage);
-    }
-
-    /**
-     * @dev Removes/disables NFT collection requirement.
-     * @param _collection Address of the NFT collection.
-     */
-    function removeNFTCollectionRequirement(address _collection) external onlyOwner {
-        require(_collection != address(0), "V.21");
-        delete nftCollectionRequirements[_collection];
-        emit NFTCollectionRequirementSet(_collection, false, 0, 0);
     }
 
     /**
