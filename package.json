@@ -1,34 +1,33 @@
 {
-  "name": "vault",
+  "name": "vaultTown",
   "version": "1.0.0",
   "description": "A robust smart contract system for token locking with linear decay voting power mechanics",
+  "license": "MIT",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "deploy-sepolia": "npx hardhat run deployments/deploy_vault.js --network sepolia",
-    "compile": "npx hardhat compile"
+    "deploy": "npx hardhat run deployments/deploy.ts --network sepolia",
+    "test": "npx hardhat test --network hardhat",
+    "solhint": "npx solhint contracts/**/*.sol",
+    "lint": "eslint \"**/*.{ts,tsx}\" -f compact",
+    "lint:fix": "eslint \"**/*.{ts,tsx}\" -f compact --fix"
   },
   "author": "frankfourier.eth",
-  "license": "MIT",
-  "keywords": [
-    "ethereum",
-    "base",
-    "smart-contracts",
-    "solidity",
-    "vault",
-    "defi",
-    "voting-power",
-    "token-locking"
-  ],
   "devDependencies": {
-    "@nomiclabs/hardhat-etherscan": "^3.1.8",
-    "hardhat": "^2.22.1"
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@typescript-eslint/eslint-plugin": "^6.9.1",
+    "@typescript-eslint/parser": "^6.9.1",
+    "eslint": "^8.52.0",
+    "eslint-config-prettier": "^9.0.0",
+    "eslint-plugin-prettier": "^5.0.1",
+    "hardhat": "^2.23.0",
+    "prettier": "^3.0.1",
+    "ts-node": "^10.9.1",
+    "typescript": "5.3.3"
   },
   "dependencies": {
-    "@nomicfoundation/hardhat-verify": "^2.0.6",
-    "@nomiclabs/hardhat-ethers": "^2.2.3",
-    "@openzeppelin/contracts": "^5.0.2",
-    "@uniswap/v2-core": "^1.0.1",
-    "dotenv": "^16.4.5",
-    "ethereumjs-util": "^7.1.5"
+    "@openzeppelin/contracts": "^5.2.0",
+    "@openzeppelin/contracts-upgradeable": "^5.4.0",
+    "dotenv": "^16.4.7",
+    "ethers": "^6.13.5",
+    "openzeppelin-contracts-4.9": "npm:@openzeppelin/contracts@^4.9.6"
   }
 }

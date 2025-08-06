@@ -1,0 +1,14 @@
+{
+  "extends": "solhint:recommended",
+  "rules": {
+    "func-visibility": [
+      "warn",
+      {
+        "ignoreConstructors": true
+      }
+    ],
+    "func-name-mixedcase": "off",
+    "no-inline-assembly": "off",
+    "gas-custom-errors": "off"
+  }
+}
