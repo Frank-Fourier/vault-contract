@@ -528,10 +528,10 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
      */
     function depositNFTs(address _collection, uint256[] calldata _tokenIds) external nonReentrant whenNotPaused validateLock(true, false) {
         require(_collection != address(0), "V.21");
-        require(_tokenIds.length > 0, "V.27");
+        require(_tokenIds.length > 0, "V.26");
         
         UserLock storage lock = userLocks[msg.sender];
-        require(lock.lockedNFTs.length + _tokenIds.length <= MAX_NFTS_PER_USER, "V.28");
+        require(lock.lockedNFTs.length + _tokenIds.length <= MAX_NFTS_PER_USER, "V.27");
         
         // Check collection is allowed
         NFTCollectionRequirement memory requirement = nftCollectionRequirements[_collection];
@@ -607,11 +607,11 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
         uint256 _newEnd
     ) internal {
         UserLock storage lockData = userLocks[_user];
-        require(lockData.amount > 0, "V.29");
+        require(lockData.amount > 0, "V.28");
         if (_newEnd < block.timestamp) {
             require(
                 lockData.lockEnd > block.timestamp,
-                "V.30"
+                "V.29"
             );
         }
         // Refresh current voting power
@@ -778,14 +778,14 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
         uint256 _endTime,
         uint256 _leaderboardPercentage
     ) external onlyOwner whenNotPaused {
-        require(_rewardTokens.length == _rewardAmounts.length, "V.31");
-        require(_endTime > block.timestamp, "V.32");
+        require(_rewardTokens.length == _rewardAmounts.length, "V.30");
+        require(_endTime > block.timestamp, "V.31");
         require(
             _endTime - block.timestamp >= MIN_EPOCH_DURATION && 
             _endTime - block.timestamp <= MAX_EPOCH_DURATION,
-            "V.33"
+            "V.32"
         );
-        require(_leaderboardPercentage <= 1000, "V.34"); // Max 10%
+        require(_leaderboardPercentage <= 1000, "V.33"); // Max 10%
 
         // Calculate performance fees and net amounts
         address[] memory netRewardTokens = new address[](_rewardTokens.length);
@@ -808,7 +808,7 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
             Epoch storage prevEpoch = epochs[currentEpochId];
             require(
                 prevEpoch.endTime <= block.timestamp,
-                "V.36"
+                "V.35"
             );
         }
 
@@ -838,10 +838,10 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
         address[] calldata _rewardTokens,
         uint256[] calldata _rewardAmounts
     ) external onlyOwner whenNotPaused {
-        require(_epochId < epochs.length, "V.37");
+        require(_epochId < epochs.length, "V.36");
         require(
             _rewardTokens.length == _rewardAmounts.length,
-            "V.31"
+            "V.30"
         );
 
         Epoch storage epoch = epochs[_epochId];
@@ -852,7 +852,7 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
         for (uint256 i = 0; i < rewardTokensLength; i++) {
             require(
                 _rewardAmounts[i] > 0,
-                "V.38"
+                "V.37"
             );
             
             (uint256 regularRewardAmount, uint256 leaderboardBonus) = _processRewardToken(
@@ -890,10 +890,10 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
     function claimEpochRewards(
         uint256 _epochId
     ) external nonReentrant whenNotPaused {
-        require(_epochId < epochs.length, "V.37");
+        require(_epochId < epochs.length, "V.36");
 
         Epoch storage epoch = epochs[_epochId];
-        require(epoch.endTime <= block.timestamp, "V.39");
+        require(epoch.endTime <= block.timestamp, "V.38");
         UserLock storage userLock = userLocks[msg.sender];
         bool epochFound = false;
         uint256 i = 0;
@@ -904,14 +904,14 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
                 break;
             }
         }
-        require(epochFound, "V.40");
+        require(epochFound, "V.39");
 
         uint256 userPower = userEpochVotingPower[msg.sender][_epochId];
         uint256 totalPower = epoch.totalVotingPower;
 
         require(
             userPower != 0 && totalPower != 0,
-            "V.41"
+            "V.40"
         );
         
         // Remove the epochID from the list of epochs to claim BEFORE transfers.
@@ -928,7 +928,7 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
             if (userShare > 0) {
                 require(
                     rewardToken.balanceOf(address(this)) >= userShare,
-                    "V.42"
+                    "V.41"
                 );
                 rewardToken.transfer(msg.sender, userShare);
             }
@@ -942,13 +942,13 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
      * @param _epochId Epoch ID to claim leaderboard bonus from.
      */
     function claimLeaderboardBonus(uint256 _epochId) external nonReentrant whenNotPaused {
-        require(_epochId < epochs.length, "V.37");
+        require(_epochId < epochs.length, "V.36");
         
         Epoch storage epoch = epochs[_epochId];
-        require(epoch.endTime <= block.timestamp, "V.39");
-        require(vaultTopHolder == msg.sender, "V.43");
-        require(!epoch.leaderboardClaimed, "V.44");
-        require(epoch.leaderboardPercentage > 0, "V.45");
+        require(epoch.endTime <= block.timestamp, "V.38");
+        require(vaultTopHolder == msg.sender, "V.42");
+        require(!epoch.leaderboardClaimed, "V.43");
+        require(epoch.leaderboardPercentage > 0, "V.44");
         
         epoch.leaderboardClaimed = true;
         
@@ -960,7 +960,7 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
             if (bonusAmounts[i] > 0) {
                 require(
                     IERC20(rewardTokens[i]).transfer(msg.sender, bonusAmounts[i]),
-                    "V.46"
+                    "V.45"
                 );
             }
         }
@@ -975,7 +975,7 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
     function emergencyWithdrawForUser() external nonReentrant whenPaused {
         require(
             emergencyWithdrawEnabled,
-            "V.52"
+            "V.49"
         );
         UserLock storage lock = userLocks[msg.sender];
         require(lock.amount > 0 || lock.lockedNFTs.length > 0, "V.16");
@@ -1153,7 +1153,7 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
             bool leaderboardClaimed
         )
     {
-        require(_epochId < epochs.length, "V.37");
+        require(_epochId < epochs.length, "V.36");
         Epoch memory epoch = epochs[_epochId];
         return (
             epoch.startTime,
@@ -1268,11 +1268,11 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
     function setDepositFeeRate(uint256 _newFeeRate) external onlyOwner {
         IVaultFactory.TierConfig memory tierConfig = factory.getVaultTierConfig(address(this));
         
-        require(tierConfig.canAdjustDepositFee, "V.47");
+        require(tierConfig.canAdjustDepositFee, "V.46");
         require(
             _newFeeRate >= tierConfig.minDepositFeeRate && 
             _newFeeRate <= tierConfig.maxDepositFeeRate, 
-            "V.48"
+            "V.47"
         );
         
         uint256 oldRate = depositFeeRate;
@@ -1289,7 +1289,7 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
     ) external onlyOwner {
         require(
             _newFeeBeneficiary != address(0),
-            "V.49"
+            "V.48"
         );
         address oldBeneficiary = feeBeneficiaryAddress;
         feeBeneficiaryAddress = _newFeeBeneficiary;
@@ -1302,7 +1302,7 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
     function enableEmergencyWithdraw() external onlyOwner whenPaused {
         require(
             !emergencyWithdrawEnabled,
-            "V.50"
+            "V.49"
         );
         emergencyWithdrawEnabled = true;
         emit EmergencyWithdrawEnabled(msg.sender);
@@ -1319,7 +1319,7 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
 
         // The additional check for unpausing remains.
         if (!_paused) {
-            require(!emergencyWithdrawEnabled, "V.51");
+            require(!emergencyWithdrawEnabled, "V.50");
         }
 
         paused = _paused;
@@ -1337,13 +1337,13 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
     ) external onlyOwner whenPaused {
         require(
             emergencyWithdrawEnabled,
-            "V.52"
+            "V.51"
         );
-        require(_token != address(token), "V.53");
-        require(_amount > 0, "V.54");
+        require(_token != address(token), "V.52");
+        require(_amount > 0, "V.53");
         require(
             IERC20(_token).balanceOf(address(this)) >= _amount,
-            "V.55"
+            "V.54"
         );
         require(
             IERC20(_token).transfer(owner(), _amount),
@@ -1366,7 +1366,7 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
         uint256 _boostPercentage
     ) external onlyOwner {
         require(_collection != address(0), "V.21");
-        require(_boostPercentage <= 10000, "V.56"); // Max 100%
+        require(_boostPercentage <= 10000, "V.55"); // Max 100%
         
         nftCollectionRequirements[_collection] = NFTCollectionRequirement({
             isActive: _isActive,
@@ -1386,7 +1386,7 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
      * @param _newTier The new tier for this vault.
      */
     function updateVaultTier(IVaultFactory.VaultTier _newTier) external {
-        require(msg.sender == address(factory), "V.57");
+        require(msg.sender == address(factory), "V.56");
         
         IVaultFactory.VaultTier oldTier = vaultTier;
         vaultTier = _newTier;
@@ -1465,37 +1465,36 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
      * V.23: Vault: not NFT owner
      * V.24: Vault: NFT not approved
      * V.25: Vault: NFT already locked
-     * V.26: Vault: NFT not found in user's lock
-     * V.27: Vault: no token IDs provided
-     * V.28: Vault: too many NFTs
-     * V.29: Vault: no existing lock
-     * V.30: Vault: current lock expired extend it first
-     * V.31: Vault: mismatched arrays
-     * V.32: Vault: invalid end time
-     * V.33: Vault: invalid epoch duration
-     * V.34: Vault: leaderboard percentage too high
-     * V.35: Vault: performance fee transfer failed
-     * V.36: Vault: previous epoch not ended
-     * V.37: Vault: invalid epoch ID
-     * V.38: Vault: reward amount must be positive
-     * V.39: Vault: epoch not ended
-     * V.40: Vault: epoch not claimable by user
-     * V.41: Vault: no rewards available
-     * V.42: Vault: insufficient reward balance
-     * V.43: Vault: not the vault top holder
-     * V.44: Vault: leaderboard bonus already claimed
-     * V.45: Vault: no leaderboard bonus for this epoch
-     * V.46: Vault: leaderboard bonus transfer failed
-     * V.47: Vault: tier doesn't allow fee adjustment
-     * V.48: Vault: fee rate outside tier limits
-     * V.49: Vault: invalid fee beneficiary address
-     * V.50: Vault: emergency withdraw already enabled
-     * V.51: Vault: cannot unpause after emergency withdraw enabled
-     * V.52: Vault: emergency withdraw not enabled
-     * V.53: Vault: cannot withdraw vault token
-     * V.54: Vault: amount must be greater than 0
-     * V.55: Vault: insufficient balance
-     * V.56: Vault: boost percentage too high
-     * V.57: Vault: only factory can update tier
+     * V.26: Vault: no token IDs provided
+     * V.27: Vault: too many NFTs
+     * V.28: Vault: no existing lock
+     * V.29: Vault: current lock expired extend it first
+     * V.30: Vault: mismatched arrays
+     * V.31: Vault: invalid end time
+     * V.32: Vault: invalid epoch duration
+     * V.33: Vault: leaderboard percentage too high
+     * V.34: Vault: performance fee transfer failed
+     * V.35: Vault: previous epoch not ended
+     * V.36: Vault: invalid epoch ID
+     * V.37: Vault: reward amount must be positive
+     * V.38: Vault: epoch not ended
+     * V.39: Vault: epoch not claimable by user
+     * V.40: Vault: no rewards available
+     * V.41: Vault: insufficient reward balance
+     * V.42: Vault: not the vault top holder
+     * V.43: Vault: leaderboard bonus already claimed
+     * V.44: Vault: no leaderboard bonus for this epoch
+     * V.45: Vault: leaderboard bonus transfer failed
+     * V.46: Vault: tier doesn't allow fee adjustment
+     * V.47: Vault: fee rate outside tier limits
+     * V.48: Vault: invalid fee beneficiary address
+     * V.49: Vault: emergency withdraw already enabled
+     * V.50: Vault: cannot unpause after emergency withdraw enabled
+     * V.51: Vault: emergency withdraw not enabled
+     * V.52: Vault: cannot withdraw vault token
+     * V.53: Vault: amount must be greater than 0
+     * V.54: Vault: insufficient balance
+     * V.55: Vault: boost percentage too high
+     * V.56: Vault: only factory can update tier
      */
 }

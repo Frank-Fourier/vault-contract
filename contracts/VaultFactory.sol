@@ -147,19 +147,19 @@ contract VaultFactory is Ownable, ReentrancyGuard {
         require(_vaultToken != address(0), "V.F.2");
         require(_vaultAdmin != address(0), "V.F.2");
         require(_feeBeneficiary != address(0), "V.F.2");
-        require(address(vaultDeployer) != address(0), "V.F.16");
-        require(vaultImplementation != address(0), "V.F.17");
+        require(address(vaultDeployer) != address(0), "V.F.3");
+        require(vaultImplementation != address(0), "V.F.4");
 
         IVaultFactory.TierConfig memory tierConfig = tierConfigs[_tier];
         
         // Check deployment fee
-        require(msg.value >= tierConfig.deploymentFee, "V.F.3");
+        require(msg.value >= tierConfig.deploymentFee, "V.F.5");
         
         // Validate deposit fee rate
         require(
             _depositFeeRate >= tierConfig.minDepositFeeRate && 
             _depositFeeRate <= tierConfig.maxDepositFeeRate, 
-            "V.F.4"
+            "V.F.6"
         );
 
         // Prepare initialization call for the Vault's initialize function
@@ -201,20 +201,20 @@ contract VaultFactory is Ownable, ReentrancyGuard {
      */
     function upgradeVaultTier(address _vaultAddress, IVaultFactory.VaultTier _newTier) external payable nonReentrant {
         // Verify vault exists and caller is the vault admin
-        require(vaultTiers[_vaultAddress] != IVaultFactory.VaultTier(0) || _vaultAddress != address(0), "V.F.5");
+        require(vaultTiers[_vaultAddress] != IVaultFactory.VaultTier(0) || _vaultAddress != address(0), "V.F.7");
         
         IVault vault = IVault(_vaultAddress);
-        require(msg.sender == vault.owner(), "V.F.6");
+        require(msg.sender == vault.owner(), "V.F.8");
         
         IVaultFactory.VaultTier currentTier = vaultTiers[_vaultAddress];
-        require(_newTier > currentTier, "V.F.7");
+        require(_newTier > currentTier, "V.F.9");
         
         // Calculate upgrade cost
         IVaultFactory.TierConfig memory currentConfig = tierConfigs[currentTier];
         IVaultFactory.TierConfig memory newConfig = tierConfigs[_newTier];
         uint256 upgradeCost = newConfig.deploymentFee - currentConfig.deploymentFee;
         
-        require(msg.value >= upgradeCost, "V.F.8");
+        require(msg.value >= upgradeCost, "V.F.10");
         
         // Update tier in factory
         vaultTiers[_vaultAddress] = _newTier;
@@ -307,7 +307,7 @@ contract VaultFactory is Ownable, ReentrancyGuard {
      */
     function getTierUpgradeCost(address _vaultAddress, IVaultFactory.VaultTier _newTier) external view returns (uint256) {
         IVaultFactory.VaultTier currentTier = vaultTiers[_vaultAddress];
-        require(_newTier > currentTier, "V.F.7");
+        require(_newTier > currentTier, "V.F.9");
         
         IVaultFactory.TierConfig memory currentConfig = tierConfigs[currentTier];
         IVaultFactory.TierConfig memory newConfig = tierConfigs[_newTier];
@@ -340,10 +340,10 @@ contract VaultFactory is Ownable, ReentrancyGuard {
         bool _canAdjustDepositFee,
         string calldata _tierName
     ) external onlyOwner {
-        require(_performanceFeeRate <= 2000, "V.F.9"); // Max 20%
-        require(_maxDepositFeeRate <= 1000, "V.F.10"); // Max 10%
-        require(_minDepositFeeRate <= _maxDepositFeeRate, "V.F.11");
-        require(_platformDepositShare <= 10000, "V.F.12");
+        require(_performanceFeeRate <= 2000, "V.F.11"); // Max 20%
+        require(_maxDepositFeeRate <= 1000, "V.F.12"); // Max 10%
+        require(_minDepositFeeRate <= _maxDepositFeeRate, "V.F.13");
+        require(_platformDepositShare <= 10000, "V.F.14");
 
         tierConfigs[_tier] = IVaultFactory.TierConfig({
             deploymentFee: _deploymentFee,
@@ -384,7 +384,7 @@ contract VaultFactory is Ownable, ReentrancyGuard {
      */
     function setMainVaultAddress(address _mainVaultAddress) external onlyOwner {
         require(_mainVaultAddress != address(0), "V.F.2");
-        require(_mainVaultAddress != mainVaultAddress, "V.F.13");
+        require(_mainVaultAddress != mainVaultAddress, "V.F.15");
         mainVaultAddress = _mainVaultAddress;
     }
 
@@ -414,7 +414,7 @@ contract VaultFactory is Ownable, ReentrancyGuard {
      */
     function setMainFeeBeneficiary(address _newFeeBeneficiary) external onlyOwner {
         require(_newFeeBeneficiary != address(0), "V.F.2");
-        require(_newFeeBeneficiary != mainFeeBeneficiary, "V.F.14");
+        require(_newFeeBeneficiary != mainFeeBeneficiary, "V.F.16");
         mainFeeBeneficiary = _newFeeBeneficiary;
         emit FeeBeneficiaryUpdated(_newFeeBeneficiary);
     }
@@ -426,7 +426,7 @@ contract VaultFactory is Ownable, ReentrancyGuard {
     function withdrawDeploymentFees(address _to) external onlyOwner {
         require(_to != address(0), "V.F.2");
         uint256 balance = address(this).balance;
-        require(balance > 0, "V.F.15");
+        require(balance > 0, "V.F.17");
         
         payable(_to).transfer(balance);
         emit DeploymentFeesWithdrawn(_to, balance);
@@ -478,20 +478,20 @@ contract VaultFactory is Ownable, ReentrancyGuard {
      * ==========  ERROR CODES  ==========
      * V.F.1: Not an approved partner
      * V.F.2: Invalid address
-     * V.F.3: Insufficient deployment fee
-     * V.F.4: Invalid deposit fee rate for tier
-     * V.F.5: Vault does not exist
-     * V.F.6: Only vault admin can upgrade
-     * V.F.7: Can only upgrade to higher tier
-     * V.F.8: Insufficient upgrade fee
-     * V.F.9: Performance fee too high
-     * V.F.10: Deposit fee too high
-     * V.F.11: Invalid fee range
-     * V.F.12: Invalid platform share
-     * V.F.13: Already set
-     * V.F.14: Same fee beneficiary
-     * V.F.15: No fees to withdraw
-     * V.F.16: Deployer not set
-     * V.F.17: Implementation not set
+     * V.F.3: Deployer not set
+     * V.F.4: Implementation not set
+     * V.F.5: Insufficient deployment fee
+     * V.F.6: Invalid deposit fee rate for tier
+     * V.F.7: Vault does not exist
+     * V.F.8: Only vault admin can upgrade
+     * V.F.9: Can only upgrade to higher tier
+     * V.F.10: Insufficient upgrade fee
+     * V.F.11: Performance fee too high
+     * V.F.12: Deposit fee too high
+     * V.F.13: Invalid fee range
+     * V.F.14: Invalid platform share
+     * V.F.15: Already set
+     * V.F.16: Same fee beneficiary
+     * V.F.17: No fees to withdraw
      */
 }
