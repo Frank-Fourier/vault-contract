@@ -12,7 +12,7 @@ contract VaultReader {
     IVault public immutable vault;
 
     constructor(address _vaultAddress) {
-        require(_vaultAddress != address(0), "VR.1");
+        require(_vaultAddress != address(0), "V.R.: invalid vault address");
         vault = IVault(_vaultAddress);
     }
 

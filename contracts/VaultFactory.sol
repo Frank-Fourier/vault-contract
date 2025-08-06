@@ -109,9 +109,8 @@ contract VaultFactory is Ownable, ReentrancyGuard {
         address _mainVaultAddress,
         address _mainFeeBeneficiary
     ) Ownable(_owner) {
-        require(_mainVaultAddress != address(0), "V.F.2");
-        require(_mainFeeBeneficiary != address(0), "V.F.3");
-        require(_owner != address(0), "V.F.4");
+        require(_mainFeeBeneficiary != address(0), "V.F.2");
+        require(_owner != address(0), "V.F.2");
 
         mainVaultAddress = _mainVaultAddress;
         mainFeeBeneficiary = _mainFeeBeneficiary;
@@ -145,22 +144,22 @@ contract VaultFactory is Ownable, ReentrancyGuard {
         if (partnerWhitelistActive) {
             require(approvedPartners[msg.sender], "V.F.1");
         }
-        require(_vaultToken != address(0), "V.F.5");
-        require(_vaultAdmin != address(0), "V.F.6");
-        require(_feeBeneficiary != address(0), "V.F.7");
-        require(address(vaultDeployer) != address(0), "V.F.25");
-        require(vaultImplementation != address(0), "V.F.26");
+        require(_vaultToken != address(0), "V.F.2");
+        require(_vaultAdmin != address(0), "V.F.2");
+        require(_feeBeneficiary != address(0), "V.F.2");
+        require(address(vaultDeployer) != address(0), "V.F.16");
+        require(vaultImplementation != address(0), "V.F.17");
 
         IVaultFactory.TierConfig memory tierConfig = tierConfigs[_tier];
         
         // Check deployment fee
-        require(msg.value >= tierConfig.deploymentFee, "V.F.8");
+        require(msg.value >= tierConfig.deploymentFee, "V.F.3");
         
         // Validate deposit fee rate
         require(
             _depositFeeRate >= tierConfig.minDepositFeeRate && 
             _depositFeeRate <= tierConfig.maxDepositFeeRate, 
-            "V.F.9"
+            "V.F.4"
         );
 
         // Prepare initialization call for the Vault's initialize function
@@ -202,20 +201,20 @@ contract VaultFactory is Ownable, ReentrancyGuard {
      */
     function upgradeVaultTier(address _vaultAddress, IVaultFactory.VaultTier _newTier) external payable nonReentrant {
         // Verify vault exists and caller is the vault admin
-        require(vaultTiers[_vaultAddress] != IVaultFactory.VaultTier(0) || _vaultAddress != address(0), "V.F.10");
+        require(vaultTiers[_vaultAddress] != IVaultFactory.VaultTier(0) || _vaultAddress != address(0), "V.F.5");
         
         IVault vault = IVault(_vaultAddress);
-        require(msg.sender == vault.owner(), "V.F.11");
+        require(msg.sender == vault.owner(), "V.F.6");
         
         IVaultFactory.VaultTier currentTier = vaultTiers[_vaultAddress];
-        require(_newTier > currentTier, "V.F.12");
+        require(_newTier > currentTier, "V.F.7");
         
         // Calculate upgrade cost
         IVaultFactory.TierConfig memory currentConfig = tierConfigs[currentTier];
         IVaultFactory.TierConfig memory newConfig = tierConfigs[_newTier];
         uint256 upgradeCost = newConfig.deploymentFee - currentConfig.deploymentFee;
         
-        require(msg.value >= upgradeCost, "V.F.13");
+        require(msg.value >= upgradeCost, "V.F.8");
         
         // Update tier in factory
         vaultTiers[_vaultAddress] = _newTier;
@@ -308,7 +307,7 @@ contract VaultFactory is Ownable, ReentrancyGuard {
      */
     function getTierUpgradeCost(address _vaultAddress, IVaultFactory.VaultTier _newTier) external view returns (uint256) {
         IVaultFactory.VaultTier currentTier = vaultTiers[_vaultAddress];
-        require(_newTier > currentTier, "V.F.12");
+        require(_newTier > currentTier, "V.F.7");
         
         IVaultFactory.TierConfig memory currentConfig = tierConfigs[currentTier];
         IVaultFactory.TierConfig memory newConfig = tierConfigs[_newTier];
@@ -341,10 +340,10 @@ contract VaultFactory is Ownable, ReentrancyGuard {
         bool _canAdjustDepositFee,
         string calldata _tierName
     ) external onlyOwner {
-        require(_performanceFeeRate <= 2000, "V.F.14"); // Max 20%
-        require(_maxDepositFeeRate <= 1000, "V.F.15"); // Max 10%
-        require(_minDepositFeeRate <= _maxDepositFeeRate, "V.F.16");
-        require(_platformDepositShare <= 10000, "V.F.17");
+        require(_performanceFeeRate <= 2000, "V.F.9"); // Max 20%
+        require(_maxDepositFeeRate <= 1000, "V.F.10"); // Max 10%
+        require(_minDepositFeeRate <= _maxDepositFeeRate, "V.F.11");
+        require(_platformDepositShare <= 10000, "V.F.12");
 
         tierConfigs[_tier] = IVaultFactory.TierConfig({
             deploymentFee: _deploymentFee,
@@ -365,7 +364,7 @@ contract VaultFactory is Ownable, ReentrancyGuard {
      * @param _approved True to approve, false to remove.
      */
     function setPartnerApproval(address _partner, bool _approved) external onlyOwner {
-        require(_partner != address(0), "V.F.18");
+        require(_partner != address(0), "V.F.2");
         approvedPartners[_partner] = _approved;
         emit PartnerApprovalChanged(_partner, _approved);
     }
@@ -384,8 +383,8 @@ contract VaultFactory is Ownable, ReentrancyGuard {
      * @param _mainVaultAddress Address of the main Vault.
      */
     function setMainVaultAddress(address _mainVaultAddress) external onlyOwner {
-        require(_mainVaultAddress != address(0), "V.F.19");
-        require(_mainVaultAddress != mainVaultAddress, "V.F.20");
+        require(_mainVaultAddress != address(0), "V.F.2");
+        require(_mainVaultAddress != mainVaultAddress, "V.F.13");
         mainVaultAddress = _mainVaultAddress;
     }
 
@@ -394,7 +393,7 @@ contract VaultFactory is Ownable, ReentrancyGuard {
      * @param _deployer Address of the VaultDeployer contract.
      */
     function setVaultDeployer(address _deployer) external onlyOwner {
-        require(_deployer != address(0), "V.F.19");
+        require(_deployer != address(0), "V.F.2");
         vaultDeployer = IVaultDeployer(_deployer);
         emit VaultDeployerUpdated(_deployer);
     }
@@ -404,7 +403,7 @@ contract VaultFactory is Ownable, ReentrancyGuard {
      * @param _implementation Address of the master Vault implementation.
      */
     function setVaultImplementation(address _implementation) external onlyOwner {
-        require(_implementation != address(0), "V.F.19");
+        require(_implementation != address(0), "V.F.2");
         vaultImplementation = _implementation;
         emit VaultImplementationUpdated(_implementation);
     }
@@ -414,8 +413,8 @@ contract VaultFactory is Ownable, ReentrancyGuard {
      * @param _newFeeBeneficiary Address of the new fee beneficiary.
      */
     function setMainFeeBeneficiary(address _newFeeBeneficiary) external onlyOwner {
-        require(_newFeeBeneficiary != address(0), "V.F.21");
-        require(_newFeeBeneficiary != mainFeeBeneficiary, "V.F.22");
+        require(_newFeeBeneficiary != address(0), "V.F.2");
+        require(_newFeeBeneficiary != mainFeeBeneficiary, "V.F.14");
         mainFeeBeneficiary = _newFeeBeneficiary;
         emit FeeBeneficiaryUpdated(_newFeeBeneficiary);
     }
@@ -425,9 +424,9 @@ contract VaultFactory is Ownable, ReentrancyGuard {
      * @param _to Address to send the fees to.
      */
     function withdrawDeploymentFees(address _to) external onlyOwner {
-        require(_to != address(0), "V.F.23");
+        require(_to != address(0), "V.F.2");
         uint256 balance = address(this).balance;
-        require(balance > 0, "V.F.24");
+        require(balance > 0, "V.F.15");
         
         payable(_to).transfer(balance);
         emit DeploymentFeesWithdrawn(_to, balance);
@@ -477,31 +476,22 @@ contract VaultFactory is Ownable, ReentrancyGuard {
 
     /*
      * ==========  ERROR CODES  ==========
-     * V.F.1: VaultFactory: not an approved partner
-     * V.F.2: Invalid main vault address
-     * V.F.3: Invalid main fee beneficiary
-     * V.F.4: Invalid owner address
-     * V.F.5: VaultFactory: invalid token address
-     * V.F.6: VaultFactory: invalid admin address
-     * V.F.7: VaultFactory: invalid fee address
-     * V.F.8: Insufficient deployment fee
-     * V.F.9: Invalid deposit fee rate for tier
-     * V.F.10: VaultFactory: vault does not exist
-     * V.F.11: VaultFactory: only vault admin can upgrade
-     * V.F.12: VaultFactory: can only upgrade to higher tier
-     * V.F.13: VaultFactory: insufficient upgrade fee
-     * V.F.14: Performance fee too high
-     * V.F.15: Deposit fee too high
-     * V.F.16: Invalid fee range
-     * V.F.17: Invalid platform share
-     * V.F.18: VaultFactory: invalid partner address
-     * V.F.19: VaultFactory: invalid address
-     * V.F.20: VaultFactory: already set
-     * V.F.21: VaultFactory: invalid fee beneficiary address
-     * V.F.22: VaultFactory: same fee beneficiary
-     * V.F.23: VaultFactory: invalid recipient
-     * V.F.24: VaultFactory: no fees to withdraw
-     * V.F.25: VaultFactory: deployer not set
-     * V.F.26: VaultFactory: implementation not set
+     * V.F.1: Not an approved partner
+     * V.F.2: Invalid address
+     * V.F.3: Insufficient deployment fee
+     * V.F.4: Invalid deposit fee rate for tier
+     * V.F.5: Vault does not exist
+     * V.F.6: Only vault admin can upgrade
+     * V.F.7: Can only upgrade to higher tier
+     * V.F.8: Insufficient upgrade fee
+     * V.F.9: Performance fee too high
+     * V.F.10: Deposit fee too high
+     * V.F.11: Invalid fee range
+     * V.F.12: Invalid platform share
+     * V.F.13: Already set
+     * V.F.14: Same fee beneficiary
+     * V.F.15: No fees to withdraw
+     * V.F.16: Deployer not set
+     * V.F.17: Implementation not set
      */
 }

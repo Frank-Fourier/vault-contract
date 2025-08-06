@@ -11,7 +11,7 @@ import "@openzeppelin/contracts/proxy/Clones.sol";
  */
 contract VaultDeployer is Ownable {
     constructor(address _initialOwner) Ownable(_initialOwner) {
-        require(_initialOwner != address(0), "Deployer: Invalid owner");
+        require(_initialOwner != address(0), "V.D.: Invalid owner");
     }
 
     /**
@@ -26,7 +26,7 @@ contract VaultDeployer is Ownable {
     ) external onlyOwner returns (address) {
         address instance = Clones.clone(implementation);
         (bool success, ) = instance.call(initializeData);
-        require(success, "Deployer: Initialization failed");
+        require(success, "V.D.: Initialization failed");
         return instance;
     }
 }

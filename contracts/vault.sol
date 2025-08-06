@@ -261,6 +261,23 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
     event VaultTierUpdated(IVaultFactory.VaultTier indexed oldTier, IVaultFactory.VaultTier indexed newTier);
 
     /**
+     * @dev Modifier to validate user lock status based on required conditions.
+     * @param _requireActive Check that the user has an active token lock.
+     * @param _requireEnded Check that the lock period has ended.
+     */
+    modifier validateLock(bool _requireActive, bool _requireEnded) {
+        if (_requireActive) {
+            _validateLockActive(msg.sender);
+        }
+        if (_requireEnded) {
+            _validateLockEnded(msg.sender, true);
+        } else {
+            _validateLockEnded(msg.sender, false);
+        }
+        _;
+    }
+
+    /**
      * @dev Modifier to make a function callable only when the contract is not paused.
      */
     modifier whenNotPaused() {
@@ -361,16 +378,7 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
             "V.11"
         );
         
-        if (fee > 0) {
-            (uint256 platformShare, uint256 adminShare) = factory.calculateDepositFeeSharing(address(this), fee);
-            
-            if (platformShare > 0) {
-                require(token.transfer(factory.mainFeeBeneficiary(), platformShare), "V.12");
-            }
-            if (adminShare > 0) {
-                require(token.transfer(feeBeneficiaryAddress, adminShare), "V.13");
-            }
-        }
+        _distributeDepositFee(fee);
 
         emit Deposited(msg.sender, _amount, fee);
     }
@@ -421,46 +429,21 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
                 "V.11"
             );
             
-            if (fee > 0) {
-                // Use tier-based fee sharing
-                (uint256 platformShare, uint256 adminShare) = factory.calculateDepositFeeSharing(address(this), fee);
-                
-                if (platformShare > 0) {
-                    require(token.transfer(factory.mainFeeBeneficiary(), platformShare), "V.12");
-                }
-                if (adminShare > 0) {
-                    require(token.transfer(feeBeneficiaryAddress, adminShare), "V.13");
-                }
-            }
+            _distributeDepositFee(fee);
         }
     }
 
     /**
      * @dev Withdraws tokens from the vault after the lock period has ended.
      */
-    function withdraw() external nonReentrant whenNotPaused {
+    function withdraw() external nonReentrant whenNotPaused validateLock(true, true) {
         UserLock storage lock = userLocks[msg.sender];
-        require(lock.amount > 0, "V.16");
-        require(block.timestamp >= lock.lockEnd, "V.17");
-
         uint256 withdrawable = lock.amount;
         _reduceUserEpochPower(msg.sender);
 
-        // Transfer all locked NFTs back to user
-        uint256 nftCount = lock.lockedNFTs.length;
-        for (uint256 i = 0; i < nftCount; i++) {
-            NFTLock memory nftLock = lock.lockedNFTs[i];
-            userNFTCounts[msg.sender][nftLock.collection]--;
-            IERC721(nftLock.collection).safeTransferFrom(address(this), msg.sender, nftLock.tokenId);
-            emit NFTWithdrawn(msg.sender, nftLock.collection, nftLock.tokenId);
-        }
+        _withdrawAllUserNFTs(lock, true);
 
-        // Clear user lock data
-        lock.amount = 0;
-        lock.lockEnd = 0;
-        lock.lockStart = 0;
-        lock.peakVotingPower = 0;
-        delete lock.lockedNFTs;
+        delete userLocks[msg.sender];
 
         require(
             token.transfer(msg.sender, withdrawable),
@@ -474,12 +457,9 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
      *      The median voting power from the effective start time to the effective end time
      *      is added to the total epoch voting power and registered to the user epoch voting power.
      */
-    function participate() external whenNotPaused {
+    function participate() external whenNotPaused validateLock(true, false) {
         if (epochs.length == 0) return;
         Epoch storage epoch = epochs[currentEpochId];
-        UserLock storage lockData = userLocks[msg.sender];
-        require(lockData.amount > 0, "V.16");
-        require(block.timestamp < lockData.lockEnd, "V.18");
         require(block.timestamp < epoch.endTime, "V.19");
         require(
             userEpochVotingPower[msg.sender][currentEpochId] == 0,
@@ -504,10 +484,8 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
      * @param _collection Address of the NFT collection.
      * @param _tokenId Token ID of the NFT to withdraw.
      */
-    function withdrawNFT(address _collection, uint256 _tokenId) external nonReentrant whenNotPaused {
+    function withdrawNFT(address _collection, uint256 _tokenId) external nonReentrant whenNotPaused validateLock(true, true) {
         UserLock storage lock = userLocks[msg.sender];
-        require(lock.amount > 0, "V.16");
-        require(block.timestamp >= lock.lockEnd, "V.17");
         
         // Find and remove the NFT from user's locked NFTs
         uint256 nftCount = lock.lockedNFTs.length;
@@ -530,27 +508,16 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
             }
         }
         
-        require(nftFound, "V.28");
+        require(nftFound, "V.26");
     }
 
     /**
      * @dev Withdraws all NFTs when withdrawing tokens.
      */
-    function withdrawAllNFTs() external nonReentrant whenNotPaused {
+    function withdrawAllNFTs() external nonReentrant whenNotPaused validateLock(true, true) {
         UserLock storage lock = userLocks[msg.sender];
-        require(lock.amount > 0, "V.16");
-        require(block.timestamp >= lock.lockEnd, "V.17");
         
-        // Transfer all locked NFTs back to user
-        uint256 nftCount = lock.lockedNFTs.length;
-        for (uint256 i = 0; i < nftCount; i++) {
-            NFTLock memory nftLock = lock.lockedNFTs[i];
-            userNFTCounts[msg.sender][nftLock.collection]--;
-            IERC721(nftLock.collection).safeTransferFrom(address(this), msg.sender, nftLock.tokenId);
-            emit NFTWithdrawn(msg.sender, nftLock.collection, nftLock.tokenId);
-        }
-        
-        // Clear the NFT array
+        _withdrawAllUserNFTs(lock, true);
         delete lock.lockedNFTs;
     }
 
@@ -559,14 +526,12 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
      * @param _collection Address of the NFT collection.
      * @param _tokenIds Array of token IDs to deposit.
      */
-    function depositNFTs(address _collection, uint256[] calldata _tokenIds) external nonReentrant whenNotPaused {
+    function depositNFTs(address _collection, uint256[] calldata _tokenIds) external nonReentrant whenNotPaused validateLock(true, false) {
         require(_collection != address(0), "V.21");
-        require(_tokenIds.length > 0, "V.29");
+        require(_tokenIds.length > 0, "V.27");
         
         UserLock storage lock = userLocks[msg.sender];
-        require(lock.amount > 0, "V.23");
-        require(block.timestamp < lock.lockEnd, "V.24");
-        require(lock.lockedNFTs.length + _tokenIds.length <= MAX_NFTS_PER_USER, "V.30");
+        require(lock.lockedNFTs.length + _tokenIds.length <= MAX_NFTS_PER_USER, "V.28");
         
         // Check collection is allowed
         NFTCollectionRequirement memory requirement = nftCollectionRequirements[_collection];
@@ -581,15 +546,15 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
             uint256 tokenId = _tokenIds[i];
             
             // Verify ownership and approval
-            require(nftContract.ownerOf(tokenId) == msg.sender, "V.25");
+            require(nftContract.ownerOf(tokenId) == msg.sender, "V.23");
             require(
                 nftContract.getApproved(tokenId) == address(this) || 
                 nftContract.isApprovedForAll(msg.sender, address(this)),
-                "V.26"
+                "V.24"
             );
             
             // Check if NFT is already locked
-            require(!this.isNFTLocked(msg.sender, _collection, tokenId), "V.27");
+            require(!this.isNFTLocked(msg.sender, _collection, tokenId), "V.25");
             
             // Transfer NFT to vault
             nftContract.safeTransferFrom(msg.sender, address(this), tokenId);
@@ -614,6 +579,23 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
      */
 
     /**
+     * @dev Distributes the deposit fee to the platform and admin beneficiaries.
+     * @param _fee The total fee to be distributed.
+     */
+    function _distributeDepositFee(uint256 _fee) internal {
+        if (_fee > 0) {
+            (uint256 platformShare, uint256 adminShare) = factory.calculateDepositFeeSharing(address(this), _fee);
+            
+            if (platformShare > 0) {
+                require(token.transfer(factory.mainFeeBeneficiary(), platformShare), "V.12");
+            }
+            if (adminShare > 0) {
+                require(token.transfer(feeBeneficiaryAddress, adminShare), "V.13");
+            }
+        }
+    }
+
+    /**
      * @dev Internal function to expand the lock of a user.
      * @param _user Address of the user.
      * @param _extraAmount Additional amount of tokens to lock.
@@ -625,11 +607,11 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
         uint256 _newEnd
     ) internal {
         UserLock storage lockData = userLocks[_user];
-        require(lockData.amount > 0, "V.31");
+        require(lockData.amount > 0, "V.29");
         if (_newEnd < block.timestamp) {
             require(
                 lockData.lockEnd > block.timestamp,
-                "V.32"
+                "V.30"
             );
         }
         // Refresh current voting power
@@ -691,16 +673,12 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
             ? lockData.lockEnd
             : epoch.endTime;
 
-        if (effectiveStart >= effectiveEnd) {
+        uint256 baseAreaUnderCurve = _calculateAreaUnderCurve(_user, effectiveStart, effectiveEnd);
+
+        if (baseAreaUnderCurve == 0) {
             userEpochVotingPower[_user][currentEpochId] = 0;
             return;
         }
-
-        uint256 vpStart = getVotingPowerAtTime(_user, effectiveStart);
-        uint256 vpEnd = getVotingPowerAtTime(_user, effectiveEnd);
-
-        // Calculate base area under curve
-        uint256 baseAreaUnderCurve = ((vpStart + vpEnd) * (effectiveEnd - effectiveStart)) / 2;
         
         // Apply NFT boost
         uint256 nftBoostPercentage = getUserNFTBoost(_user);
@@ -751,15 +729,12 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
                 ? lockData.lockEnd
                 : epoch.endTime;
 
-            if (effectiveStart >= effectiveEnd) {
+            uint256 areaUnderCurve = _calculateAreaUnderCurve(_user, effectiveStart, effectiveEnd);
+            
+            if (areaUnderCurve == 0) {
                 return;
             }
 
-            uint256 vpStart = getVotingPowerAtTime(_user, effectiveStart);
-            uint256 vpEnd = getVotingPowerAtTime(_user, effectiveEnd);
-
-            uint256 areaUnderCurve = ((vpStart + vpEnd) *
-                (effectiveEnd - effectiveStart)) / 2;
             if (areaUnderCurve > oldUserPower)
                 userEpochVotingPower[_user][currentEpochId] = 0;
             userEpochVotingPower[_user][currentEpochId] =
@@ -803,14 +778,14 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
         uint256 _endTime,
         uint256 _leaderboardPercentage
     ) external onlyOwner whenNotPaused {
-        require(_rewardTokens.length == _rewardAmounts.length, "V.33");
-        require(_endTime > block.timestamp, "V.34");
+        require(_rewardTokens.length == _rewardAmounts.length, "V.31");
+        require(_endTime > block.timestamp, "V.32");
         require(
             _endTime - block.timestamp >= MIN_EPOCH_DURATION && 
             _endTime - block.timestamp <= MAX_EPOCH_DURATION,
-            "V.35"
+            "V.33"
         );
-        require(_leaderboardPercentage <= 1000, "V.36"); // Max 10%
+        require(_leaderboardPercentage <= 1000, "V.34"); // Max 10%
 
         // Calculate performance fees and net amounts
         address[] memory netRewardTokens = new address[](_rewardTokens.length);
@@ -818,32 +793,22 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
         uint256[] memory leaderboardBonusAmounts = new uint256[](_rewardTokens.length);
         
         for (uint256 i = 0; i < _rewardTokens.length; i++) {
-            uint256 grossAmount = _rewardAmounts[i];
-            uint256 performanceFee = factory.calculatePerformanceFee(address(this), grossAmount);
-            uint256 netAmount = grossAmount - performanceFee;
-            
-            require(IERC20(_rewardTokens[i]).allowance(msg.sender, address(this)) >= grossAmount, "V.10");
-            require(IERC20(_rewardTokens[i]).transferFrom(msg.sender, address(this), grossAmount), "V.11");
-            
-            // Transfer performance fee to platform
-            if (performanceFee > 0) {
-                require(IERC20(_rewardTokens[i]).transfer(factory.mainFeeBeneficiary(), performanceFee), "V.37");
-            }
-            
-            // Calculate leaderboard bonus upfront and separate it from regular rewards
-            uint256 leaderboardBonus = (netAmount * _leaderboardPercentage) / 10000;
-            uint256 regularRewardAmount = netAmount - leaderboardBonus;
+            (uint256 regularReward, uint256 leaderboardBonus) = _processRewardToken(
+                _rewardTokens[i],
+                _rewardAmounts[i],
+                _leaderboardPercentage
+            );
             
             netRewardTokens[i] = _rewardTokens[i];
-            netRewardAmounts[i] = regularRewardAmount; // Only regular rewards available for claiming
-            leaderboardBonusAmounts[i] = leaderboardBonus; // Separate leaderboard bonus
+            netRewardAmounts[i] = regularReward;
+            leaderboardBonusAmounts[i] = leaderboardBonus;
         }
 
         if (epochs.length > 0) {
             Epoch storage prevEpoch = epochs[currentEpochId];
             require(
                 prevEpoch.endTime <= block.timestamp,
-                "V.38"
+                "V.36"
             );
         }
 
@@ -873,10 +838,10 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
         address[] calldata _rewardTokens,
         uint256[] calldata _rewardAmounts
     ) external onlyOwner whenNotPaused {
-        require(_epochId < epochs.length, "V.39");
+        require(_epochId < epochs.length, "V.37");
         require(
             _rewardTokens.length == _rewardAmounts.length,
-            "V.33"
+            "V.31"
         );
 
         Epoch storage epoch = epochs[_epochId];
@@ -887,30 +852,14 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
         for (uint256 i = 0; i < rewardTokensLength; i++) {
             require(
                 _rewardAmounts[i] > 0,
-                "V.40"
+                "V.38"
             );
             
-            uint256 grossAmount = _rewardAmounts[i];
-            uint256 performanceFee = factory.calculatePerformanceFee(address(this), grossAmount);
-            uint256 netAmount = grossAmount - performanceFee;
-            
-            require(
-                IERC20(_rewardTokens[i]).allowance(msg.sender, address(this)) >= grossAmount,
-                "V.10"
+            (uint256 regularRewardAmount, uint256 leaderboardBonus) = _processRewardToken(
+                _rewardTokens[i],
+                _rewardAmounts[i],
+                epoch.leaderboardPercentage
             );
-            require(
-                IERC20(_rewardTokens[i]).transferFrom(msg.sender, address(this), grossAmount),
-                "V.11"
-            );
-            
-            // Transfer performance fee to platform
-            if (performanceFee > 0) {
-                require(IERC20(_rewardTokens[i]).transfer(factory.mainFeeBeneficiary(), performanceFee), "V.37");
-            }
-            
-            // Calculate leaderboard portion of additional rewards
-            uint256 leaderboardBonus = (netAmount * epoch.leaderboardPercentage) / 10000;
-            uint256 regularRewardAmount = netAmount - leaderboardBonus;
             
             bool tokenExists = false;
             // Check if token already exists in epoch
@@ -941,10 +890,10 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
     function claimEpochRewards(
         uint256 _epochId
     ) external nonReentrant whenNotPaused {
-        require(_epochId < epochs.length, "V.39");
+        require(_epochId < epochs.length, "V.37");
 
         Epoch storage epoch = epochs[_epochId];
-        require(epoch.endTime <= block.timestamp, "V.41");
+        require(epoch.endTime <= block.timestamp, "V.39");
         UserLock storage userLock = userLocks[msg.sender];
         bool epochFound = false;
         uint256 i = 0;
@@ -955,14 +904,14 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
                 break;
             }
         }
-        require(epochFound, "V.42");
+        require(epochFound, "V.40");
 
         uint256 userPower = userEpochVotingPower[msg.sender][_epochId];
         uint256 totalPower = epoch.totalVotingPower;
 
         require(
             userPower != 0 && totalPower != 0,
-            "V.43"
+            "V.41"
         );
         
         // Remove the epochID from the list of epochs to claim BEFORE transfers.
@@ -979,7 +928,7 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
             if (userShare > 0) {
                 require(
                     rewardToken.balanceOf(address(this)) >= userShare,
-                    "V.44"
+                    "V.42"
                 );
                 rewardToken.transfer(msg.sender, userShare);
             }
@@ -993,13 +942,13 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
      * @param _epochId Epoch ID to claim leaderboard bonus from.
      */
     function claimLeaderboardBonus(uint256 _epochId) external nonReentrant whenNotPaused {
-        require(_epochId < epochs.length, "V.39");
+        require(_epochId < epochs.length, "V.37");
         
         Epoch storage epoch = epochs[_epochId];
-        require(epoch.endTime <= block.timestamp, "V.41");
-        require(vaultTopHolder == msg.sender, "V.45");
-        require(!epoch.leaderboardClaimed, "V.46");
-        require(epoch.leaderboardPercentage > 0, "V.47");
+        require(epoch.endTime <= block.timestamp, "V.39");
+        require(vaultTopHolder == msg.sender, "V.43");
+        require(!epoch.leaderboardClaimed, "V.44");
+        require(epoch.leaderboardPercentage > 0, "V.45");
         
         epoch.leaderboardClaimed = true;
         
@@ -1011,12 +960,42 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
             if (bonusAmounts[i] > 0) {
                 require(
                     IERC20(rewardTokens[i]).transfer(msg.sender, bonusAmounts[i]),
-                    "V.48"
+                    "V.46"
                 );
             }
         }
         
         emit LeaderboardBonusClaimed(_epochId, msg.sender, vaultTopHolderCumulativePower, rewardTokens, bonusAmounts);
+    }
+
+    /**
+     * @dev Emergency withdrawal of a user's entire position (principal and NFTs).
+     *      This can only be called by the user themselves after the owner has enabled it.
+     */
+    function emergencyWithdrawForUser() external nonReentrant whenPaused {
+        require(
+            emergencyWithdrawEnabled,
+            "V.52"
+        );
+        UserLock storage lock = userLocks[msg.sender];
+        require(lock.amount > 0 || lock.lockedNFTs.length > 0, "V.16");
+
+        // 1. Withdraw Principal
+        if (lock.amount > 0) {
+             require(
+                token.transfer(msg.sender, lock.amount),
+                "V.11"
+            );
+        }
+
+        // 2. Withdraw all locked NFTs
+        _withdrawAllUserNFTs(lock, false);
+
+        emit EmergencyWithdrawForUser(msg.sender, lock.amount);
+
+        // 3. Optional: Reset user's lock state if you want to prevent re-entry issues.
+        // This is good practice to prevent the user from having a "zombie" lock state.
+        delete userLocks[msg.sender];
     }
 
     /*
@@ -1100,6 +1079,25 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
     }
 
     /**
+     * @dev Internal function to withdraw all of a user's NFTs.
+     * @param lock The user's lock storage pointer.
+     * @param shouldEmit True to emit NFTWithdrawn events, false otherwise.
+     */
+    function _withdrawAllUserNFTs(UserLock storage lock, bool shouldEmit) internal {
+        uint256 nftCount = lock.lockedNFTs.length;
+        if (nftCount > 0) {
+            for (uint256 i = 0; i < nftCount; i++) {
+                NFTLock memory nftLock = lock.lockedNFTs[i];
+                userNFTCounts[msg.sender][nftLock.collection]--;
+                IERC721(nftLock.collection).safeTransferFrom(address(this), msg.sender, nftLock.tokenId);
+                if (shouldEmit) {
+                    emit NFTWithdrawn(msg.sender, nftLock.collection, nftLock.tokenId);
+                }
+            }
+        }
+    }
+
+    /**
      * @dev Checks if a specific NFT is locked by a user.
      * @param _user Address of the user.
      * @param _collection Address of the NFT collection.
@@ -1155,7 +1153,7 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
             bool leaderboardClaimed
         )
     {
-        require(_epochId < epochs.length, "V.39");
+        require(_epochId < epochs.length, "V.37");
         Epoch memory epoch = epochs[_epochId];
         return (
             epoch.startTime,
@@ -1216,6 +1214,49 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
         return totalBoost;
     }
 
+    /**
+     * @dev Calculates the area under the voting power curve between two timestamps.
+     * @param _user The address of the user.
+     * @param _startTime The start time for the calculation.
+     * @param _endTime The end time for the calculation.
+     * @return The area under the curve, representing integrated voting power.
+     */
+    function _calculateAreaUnderCurve(
+        address _user,
+        uint256 _startTime,
+        uint256 _endTime
+    ) internal view returns (uint256) {
+        if (_startTime >= _endTime) {
+            return 0;
+        }
+
+        uint256 vpStart = getVotingPowerAtTime(_user, _startTime);
+        uint256 vpEnd = getVotingPowerAtTime(_user, _endTime);
+
+        return ((vpStart + vpEnd) * (_endTime - _startTime)) / 2;
+    }
+
+    /**
+     * @dev Internal function to validate if a user's lock is active.
+     * @param _user The address of the user to check.
+     */
+    function _validateLockActive(address _user) internal view {
+        require(userLocks[_user].amount > 0, "V.16");
+    }
+
+    /**
+     * @dev Internal function to validate if a user's lock has ended or not.
+     * @param _user The address of the user to check.
+     * @param _shouldBeEnded True to check if the lock has ended, false to check if it has not.
+     */
+    function _validateLockEnded(address _user, bool _shouldBeEnded) internal view {
+        if (_shouldBeEnded) {
+            require(block.timestamp >= userLocks[_user].lockEnd, "V.17");
+        } else {
+            require(block.timestamp < userLocks[_user].lockEnd, "V.18");
+        }
+    }
+
     /*
      * ==========  ADMIN FUNCTIONS  ==========
      */
@@ -1227,11 +1268,11 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
     function setDepositFeeRate(uint256 _newFeeRate) external onlyOwner {
         IVaultFactory.TierConfig memory tierConfig = factory.getVaultTierConfig(address(this));
         
-        require(tierConfig.canAdjustDepositFee, "V.49");
+        require(tierConfig.canAdjustDepositFee, "V.47");
         require(
             _newFeeRate >= tierConfig.minDepositFeeRate && 
             _newFeeRate <= tierConfig.maxDepositFeeRate, 
-            "V.50"
+            "V.48"
         );
         
         uint256 oldRate = depositFeeRate;
@@ -1248,7 +1289,7 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
     ) external onlyOwner {
         require(
             _newFeeBeneficiary != address(0),
-            "V.51"
+            "V.49"
         );
         address oldBeneficiary = feeBeneficiaryAddress;
         feeBeneficiaryAddress = _newFeeBeneficiary;
@@ -1261,30 +1302,28 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
     function enableEmergencyWithdraw() external onlyOwner whenPaused {
         require(
             !emergencyWithdrawEnabled,
-            "V.52"
+            "V.50"
         );
         emergencyWithdrawEnabled = true;
         emit EmergencyWithdrawEnabled(msg.sender);
     }
 
     /**
-     * @dev Pauses the vault.
+     * @dev Sets the vault pause status.
+     * @param _paused True to pause the vault, false to unpause it.
      */
-    function pause() external onlyOwner whenNotPaused {
-        paused = true;
-        emit VaultStatusChanged(true);
-    }
+    function setPauseStatus(bool _paused) external onlyOwner {
+        // This check ensures the vault is not already in the requested state,
+        // using a ternary operator to provide the correct original error code.
+        require(paused != _paused, _paused ? "V.1" : "V.2");
 
-    /**
-     * @dev Unpauses the vault.
-     */
-    function unpause() external onlyOwner whenPaused {
-        require(
-            !emergencyWithdrawEnabled,
-            "V.53"
-        );
-        paused = false;
-        emit VaultStatusChanged(false);
+        // The additional check for unpausing remains.
+        if (!_paused) {
+            require(!emergencyWithdrawEnabled, "V.51");
+        }
+
+        paused = _paused;
+        emit VaultStatusChanged(_paused);
     }
 
     /**
@@ -1298,58 +1337,19 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
     ) external onlyOwner whenPaused {
         require(
             emergencyWithdrawEnabled,
-            "V.54"
+            "V.52"
         );
-        require(_token != address(token), "V.55");
-        require(_amount > 0, "V.56");
+        require(_token != address(token), "V.53");
+        require(_amount > 0, "V.54");
         require(
             IERC20(_token).balanceOf(address(this)) >= _amount,
-            "V.57"
+            "V.55"
         );
         require(
             IERC20(_token).transfer(owner(), _amount),
             "V.11"
         );
         emit EmergencyTokenWithdraw(_token, _amount);
-    }
-
-    /**
-     * @dev Emergency withdrawal of a user's entire position (principal and NFTs).
-     *      This can only be called by the user themselves after the owner has enabled it.
-     */
-    function emergencyWithdrawForUser() external nonReentrant whenPaused {
-        require(
-            emergencyWithdrawEnabled,
-            "V.54"
-        );
-        UserLock storage lock = userLocks[msg.sender];
-        require(lock.amount > 0 || lock.lockedNFTs.length > 0, "V.16");
-
-        // 1. Withdraw Principal
-        if (lock.amount > 0) {
-             require(
-                token.transfer(msg.sender, lock.amount),
-                "V.11"
-            );
-        }
-
-        // 2. Withdraw all locked NFTs
-        uint256 nftCount = lock.lockedNFTs.length;
-        if (nftCount > 0) {
-            for (uint256 i = 0; i < nftCount; i++) {
-                NFTLock memory nftLock = lock.lockedNFTs[i];
-                userNFTCounts[msg.sender][nftLock.collection]--;
-                IERC721(nftLock.collection).safeTransferFrom(address(this), msg.sender, nftLock.tokenId);
-            }
-            // Clear the NFT array
-            delete lock.lockedNFTs;
-        }
-
-        emit EmergencyWithdrawForUser(msg.sender, lock.amount);
-
-        // 3. Optional: Reset user's lock state if you want to prevent re-entry issues.
-        // This is good practice to prevent the user from having a "zombie" lock state.
-        delete userLocks[msg.sender];
     }
 
     /**
@@ -1366,7 +1366,7 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
         uint256 _boostPercentage
     ) external onlyOwner {
         require(_collection != address(0), "V.21");
-        require(_boostPercentage <= 10000, "V.59"); // Max 100%
+        require(_boostPercentage <= 10000, "V.56"); // Max 100%
         
         nftCollectionRequirements[_collection] = NFTCollectionRequirement({
             isActive: _isActive,
@@ -1377,12 +1377,16 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
         emit NFTCollectionRequirementSet(_collection, _isActive, _requiredCount, _boostPercentage);
     }
 
+    /*
+     * ==========  SYSTEM-CALLED FUNCTIONS  ==========
+     */
+
     /**
      * @dev Updates the vault tier (only callable by factory during upgrades).
      * @param _newTier The new tier for this vault.
      */
     function updateVaultTier(IVaultFactory.VaultTier _newTier) external {
-        require(msg.sender == address(factory), "V.60");
+        require(msg.sender == address(factory), "V.57");
         
         IVaultFactory.VaultTier oldTier = vaultTier;
         vaultTier = _newTier;
@@ -1405,6 +1409,34 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
     ) external pure override returns (bytes4) {
         return IERC721Receiver.onERC721Received.selector;
     }
+
+    /**
+    * @dev Processes a single reward token by calculating fees, performing transfers,
+    *      and returning the regular and leaderboard reward amounts.
+    * @param _rewardToken The address of the reward token.
+    * @param _grossAmount The gross amount of the reward token.
+    * @param _leaderboardPercentage The percentage for the leaderboard bonus.
+    * @return regularReward The amount for regular distribution.
+    * @return leaderboardBonus The amount for the leaderboard.
+    */
+   function _processRewardToken(
+       address _rewardToken,
+       uint256 _grossAmount,
+       uint256 _leaderboardPercentage
+   ) internal returns (uint256 regularReward, uint256 leaderboardBonus) {
+       uint256 performanceFee = factory.calculatePerformanceFee(address(this), _grossAmount);
+       uint256 netAmount = _grossAmount - performanceFee;
+
+       require(IERC20(_rewardToken).allowance(msg.sender, address(this)) >= _grossAmount, "V.10");
+       require(IERC20(_rewardToken).transferFrom(msg.sender, address(this), _grossAmount), "V.11");
+
+       if (performanceFee > 0) {
+           require(IERC20(_rewardToken).transfer(factory.mainFeeBeneficiary(), performanceFee), "V.35");
+       }
+
+       leaderboardBonus = (netAmount * _leaderboardPercentage) / 10000;
+       regularReward = netAmount - leaderboardBonus;
+   }
 
     /*
      * ==========  ERROR CODES  ==========
@@ -1430,43 +1462,40 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
      * V.20: Vault: already registered for this epoch
      * V.21: Vault: invalid collection address
      * V.22: Vault: collection not allowed
-     * V.23: Vault: must have active token lock first
-     * V.24: Vault: token lock has expired
-     * V.25: Vault: not NFT owner
-     * V.26: Vault: NFT not approved
-     * V.27: Vault: NFT already locked
-     * V.28: Vault: NFT not found in user's lock
-     * V.29: Vault: no token IDs provided
-     * V.30: Vault: too many NFTs
-     * V.31: Vault: no existing lock
-     * V.32: Vault: current lock expired extend it first
-     * V.33: Vault: mismatched arrays
-     * V.34: Vault: invalid end time
-     * V.35: Vault: invalid epoch duration
-     * V.36: Vault: leaderboard percentage too high
-     * V.37: Vault: performance fee transfer failed
-     * V.38: Vault: previous epoch not ended
-     * V.39: Vault: invalid epoch ID
-     * V.40: Vault: reward amount must be positive
-     * V.41: Vault: epoch not ended
-     * V.42: Vault: epoch not claimable by user
-     * V.43: Vault: no rewards available
-     * V.44: Vault: insufficient reward balance
-     * V.45: Vault: not the vault top holder
-     * V.46: Vault: leaderboard bonus already claimed
-     * V.47: Vault: no leaderboard bonus for this epoch
-     * V.48: Vault: leaderboard bonus transfer failed
-     * V.49: Vault: tier doesn't allow fee adjustment
-     * V.50: Vault: fee rate outside tier limits
-     * V.51: Vault: invalid fee beneficiary address
-     * V.52: Vault: emergency withdraw already enabled
-     * V.53: Vault: cannot unpause after emergency withdraw enabled
-     * V.54: Vault: emergency withdraw not enabled
-     * V.55: Vault: cannot withdraw vault token
-     * V.56: Vault: amount must be greater than 0
-     * V.57: Vault: insufficient balance
-     * V.58: Vault: no locked NFTs
-     * V.59: Vault: boost percentage too high
-     * V.60: Vault: only factory can update tier
+     * V.23: Vault: not NFT owner
+     * V.24: Vault: NFT not approved
+     * V.25: Vault: NFT already locked
+     * V.26: Vault: NFT not found in user's lock
+     * V.27: Vault: no token IDs provided
+     * V.28: Vault: too many NFTs
+     * V.29: Vault: no existing lock
+     * V.30: Vault: current lock expired extend it first
+     * V.31: Vault: mismatched arrays
+     * V.32: Vault: invalid end time
+     * V.33: Vault: invalid epoch duration
+     * V.34: Vault: leaderboard percentage too high
+     * V.35: Vault: performance fee transfer failed
+     * V.36: Vault: previous epoch not ended
+     * V.37: Vault: invalid epoch ID
+     * V.38: Vault: reward amount must be positive
+     * V.39: Vault: epoch not ended
+     * V.40: Vault: epoch not claimable by user
+     * V.41: Vault: no rewards available
+     * V.42: Vault: insufficient reward balance
+     * V.43: Vault: not the vault top holder
+     * V.44: Vault: leaderboard bonus already claimed
+     * V.45: Vault: no leaderboard bonus for this epoch
+     * V.46: Vault: leaderboard bonus transfer failed
+     * V.47: Vault: tier doesn't allow fee adjustment
+     * V.48: Vault: fee rate outside tier limits
+     * V.49: Vault: invalid fee beneficiary address
+     * V.50: Vault: emergency withdraw already enabled
+     * V.51: Vault: cannot unpause after emergency withdraw enabled
+     * V.52: Vault: emergency withdraw not enabled
+     * V.53: Vault: cannot withdraw vault token
+     * V.54: Vault: amount must be greater than 0
+     * V.55: Vault: insufficient balance
+     * V.56: Vault: boost percentage too high
+     * V.57: Vault: only factory can update tier
      */
 }
