@@ -45,6 +45,7 @@ interface IVault {
         address _vaultAdmin,
         address _factory,
         address _feeBeneficiary,
+        string memory _metadataURI,
         IVaultFactory.VaultTier _tier
     ) external;
 

@@ -139,6 +139,7 @@ contract VaultFactory is Ownable, ReentrancyGuard {
         uint256 _depositFeeRate,
         address _vaultAdmin,
         address _feeBeneficiary,
+        string memory _metadataURI,
         IVaultFactory.VaultTier _tier
     ) external payable nonReentrant returns (address) {
         if (partnerWhitelistActive) {
@@ -170,6 +171,7 @@ contract VaultFactory is Ownable, ReentrancyGuard {
             _vaultAdmin,
             address(this),
             _feeBeneficiary,
+            _metadataURI,
             _tier
         );
 

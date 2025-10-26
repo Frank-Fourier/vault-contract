@@ -60,29 +60,36 @@ async function main() {
   const tx_set_impl = await vaultFactory.setVaultImplementation(
     vaultImplementationAddress,
   );
-  await tx_set_impl.wait(); // Wait for the transaction to be mined
+  await tx_set_impl.wait(2); // Wait for 2 block confirmations
   console.log('-> Factory configured with Vault implementation.');
 
   const tx_set_deployer =
     await vaultFactory.setVaultDeployer(vaultDeployerAddress);
-  await tx_set_deployer.wait(); // Wait for the transaction to be mined
+  await tx_set_deployer.wait(2); // Wait for 2 block confirmations
   console.log('-> Factory configured with Vault deployer.');
 
   const tx_transfer_owner =
     await vaultDeployer.transferOwnership(vaultFactoryAddress);
-  await tx_transfer_owner.wait(); // Wait for the transaction to be mined
+  await tx_transfer_owner.wait(2); // Wait for 2 block confirmations
   console.log('-> VaultDeployer ownership transferred to VaultFactory.');
 
   console.log('\n--- 6. Creating a Sample Vault (Clone) via Factory ---');
+  const vaultMetadata = JSON.stringify({
+    name: 'Sample Test Vault',
+    description: 'A sample vault for testing the vault system',
+    image: 'https://example.com/vault-logo.png',
+  });
+
   const tx = await vaultFactory.createVault(
     assetAddress, // _vaultToken
     500, // _depositFeeRate (5%), required for Tier 0
     deployer.address, // _vaultAdmin
     deployer.address, // _feeBeneficiary
+    vaultMetadata, // _metadataURI
     0, // _tier (NO_RISK_NO_CROWN)
     { value: ethers.parseEther('0') }, // Deployment fee for Tier 0 is 0
   );
-  const receipt = await tx.wait();
+  const receipt = await tx.wait(2); // Wait for 2 block confirmations
   if (!receipt) {
     throw new Error(
       'Transaction for creating vault failed, no receipt returned.',
@@ -105,15 +112,7 @@ async function main() {
   const sampleVaultAddress = vaultCreatedEvent.args.vaultAddress;
   console.log('Sample Vault (clone) created at:', sampleVaultAddress);
 
-  console.log('\n--- 7. Deploying VaultReader ---');
-  const VaultReader = await ethers.getContractFactory('VaultReader');
-  const vaultReader = await VaultReader.deploy(sampleVaultAddress);
-  await vaultReader.waitForDeployment();
-  const vaultReaderAddress = await vaultReader.getAddress();
-  console.log('VaultReader deployed to:', vaultReaderAddress);
-  console.log('-> VaultReader is reading from:', await vaultReader.vault());
-
-  console.log('\n--- 8. Verifying Contracts on Etherscan ---');
+  console.log('\n--- 7. Verifying Contracts on Etherscan ---');
   console.log('Waiting for 30 seconds before starting verification...');
   await delay(30000);
 
@@ -130,11 +129,6 @@ async function main() {
       args: [deployerArg],
     },
     { name: 'VaultFactory', address: vaultFactoryAddress, args: factoryArgs },
-    {
-      name: 'VaultReader',
-      address: vaultReaderAddress,
-      args: [sampleVaultAddress],
-    },
   ];
 
   for (const contract of contractsToVerify) {
@@ -162,7 +156,6 @@ async function main() {
     vaultDeployer: vaultDeployerAddress,
     vaultImplementation: vaultImplementationAddress,
     sampleVault: sampleVaultAddress,
-    vaultReader: vaultReaderAddress,
   });
 }
 

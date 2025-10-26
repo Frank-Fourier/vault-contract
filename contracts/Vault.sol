@@ -64,6 +64,9 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
     /// @notice Top holder's cumulative voting power across all epochs
     uint256 public vaultTopHolderCumulativePower;
 
+    /// @notice Vault metadata URI or encoded JSON string
+    string public metadataURI;
+
     /// @notice Mapping to track cumulative voting power per user across all epochs
     mapping(address => uint256) public userCumulativeVotingPower;
 
@@ -317,6 +320,7 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
         address _vaultAdmin,
         address _factory,
         address _feeBeneficiary,
+        string memory _metadataURI,
         IVaultFactory.VaultTier _tier
     ) external initializer {
         require(_token != address(0), "V.3");
@@ -332,6 +336,7 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
         depositFeeRate = _depositFeeRate;
         factory = IVaultFactory(_factory);
         feeBeneficiaryAddress = _feeBeneficiary;
+        metadataURI = _metadataURI;
         vaultTier = _tier;
     }
 
