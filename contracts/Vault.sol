@@ -197,6 +197,10 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
         address indexed newBeneficiary
     );
 
+    /// @notice Event emitted when vault metadata URI is updated.
+    /// @param metadataURI The new metadata URI or encoded JSON string.
+    event MetadataURIUpdated(string metadataURI);
+
     /// @notice Event emitted when vault is paused or unpaused.
     /// @param isPaused A boolean indicating the current status of the vault; true if paused, false if unpaused.
     event VaultStatusChanged(bool isPaused);
@@ -1336,6 +1340,15 @@ contract Vault is Initializable, ReentrancyGuardUpgradeable, IERC721Receiver, Ow
         address oldBeneficiary = feeBeneficiaryAddress;
         feeBeneficiaryAddress = _newFeeBeneficiary;
         emit FeeBeneficiaryUpdated(oldBeneficiary, _newFeeBeneficiary);
+    }
+
+    /**
+     * @dev Updates the vault metadata URI or encoded JSON string.
+     * @param _metadataURI The new metadata string.
+     */
+    function setMetadataURI(string memory _metadataURI) external onlyOwner {
+        metadataURI = _metadataURI;
+        emit MetadataURIUpdated(_metadataURI);
     }
 
     /**
